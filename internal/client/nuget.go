@@ -18,6 +18,7 @@ type Client struct {
 	BaseURL    string
 	APIKey     string
 	Verbose    bool
+	Insecure   bool
 	httpClient *http.Client
 	index      *ServiceIndex
 }
@@ -32,6 +33,7 @@ func New(baseURL, apiKey string, verbose, insecure bool) *Client {
 		BaseURL:    strings.TrimRight(baseURL, "/"),
 		APIKey:     apiKey,
 		Verbose:    verbose,
+		Insecure:   insecure,
 		httpClient: &http.Client{Transport: transport},
 	}
 }
@@ -53,6 +55,12 @@ func (c *Client) ServiceIndex() (*ServiceIndex, error) {
 	if c.index != nil {
 		return c.index, nil
 	}
+	return c.RefreshServiceIndex()
+}
+
+// RefreshServiceIndex re-fetches the service index, bypassing the cache
+// ServiceIndex keeps after the first successful call.
+func (c *Client) RefreshServiceIndex() (*ServiceIndex, error) {
 	var idx ServiceIndex
 	if err := c.get(c.BaseURL, &idx); err != nil {
 		return nil, err
