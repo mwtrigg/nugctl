@@ -1,0 +1,132 @@
+package resolve
+
+import (
+	"testing"
+
+	"github.com/mwtrigg/nugctl/internal/config"
+)
+
+func testConfig() *config.Config {
+	return &config.Config{
+		CurrentProfile: "default",
+		Profiles: []config.Profile{
+			{Name: "default", URL: "https://profile.example/v3/index.json", APIKey: "profile-key", Insecure: false},
+		},
+	}
+}
+
+func TestClientFromConfig_ProfileOnly(t *testing.T) {
+	c, err := ClientFromConfig(testConfig(), Overrides{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.BaseURL != "https://profile.example/v3/index.json" {
+		t.Errorf("BaseURL = %q, want profile URL", c.BaseURL)
+	}
+	if c.APIKey != "profile-key" {
+		t.Errorf("APIKey = %q, want profile key", c.APIKey)
+	}
+}
+
+func TestClientFromConfig_EnvOverridesProfile(t *testing.T) {
+	t.Setenv(EnvURL, "https://env.example/v3/index.json")
+	t.Setenv(EnvAPIKey, "env-key")
+	t.Setenv(EnvInsecure, "true")
+
+	c, err := ClientFromConfig(testConfig(), Overrides{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.BaseURL != "https://env.example/v3/index.json" {
+		t.Errorf("BaseURL = %q, want env URL", c.BaseURL)
+	}
+	if c.APIKey != "env-key" {
+		t.Errorf("APIKey = %q, want env key", c.APIKey)
+	}
+}
+
+func TestClientFromConfig_FlagOverridesEnv(t *testing.T) {
+	t.Setenv(EnvURL, "https://env.example/v3/index.json")
+	t.Setenv(EnvAPIKey, "env-key")
+
+	c, err := ClientFromConfig(testConfig(), Overrides{
+		URL:    "https://flag.example/v3/index.json",
+		APIKey: "flag-key",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.BaseURL != "https://flag.example/v3/index.json" {
+		t.Errorf("BaseURL = %q, want flag URL", c.BaseURL)
+	}
+	if c.APIKey != "flag-key" {
+		t.Errorf("APIKey = %q, want flag key", c.APIKey)
+	}
+}
+
+func TestClientFromConfig_InsecurePrecedence(t *testing.T) {
+	// profile default false, env true, flag explicitly false -> flag wins.
+	t.Setenv(EnvInsecure, "true")
+
+	c, err := ClientFromConfig(testConfig(), Overrides{Insecure: false, InsecureSet: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.Insecure {
+		t.Error("Insecure = true, want false (explicit flag should override env)")
+	}
+
+	// env true, no flag -> env wins over profile's false.
+	c2, err := ClientFromConfig(testConfig(), Overrides{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !c2.Insecure {
+		t.Error("Insecure = false, want true (env should override profile default)")
+	}
+}
+
+func TestClientFromConfig_ProfileNameOverride(t *testing.T) {
+	cfg := &config.Config{
+		CurrentProfile: "a",
+		Profiles: []config.Profile{
+			{Name: "a", URL: "https://a.example/v3/index.json"},
+			{Name: "b", URL: "https://b.example/v3/index.json"},
+		},
+	}
+	c, err := ClientFromConfig(cfg, Overrides{Profile: "b"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.BaseURL != "https://b.example/v3/index.json" {
+		t.Errorf("BaseURL = %q, want profile b's URL", c.BaseURL)
+	}
+}
+
+func TestClientFromConfig_EnvProfileOverride(t *testing.T) {
+	t.Setenv(EnvProfile, "b")
+	cfg := &config.Config{
+		CurrentProfile: "a",
+		Profiles: []config.Profile{
+			{Name: "a", URL: "https://a.example/v3/index.json"},
+			{Name: "b", URL: "https://b.example/v3/index.json"},
+		},
+	}
+	c, err := ClientFromConfig(cfg, Overrides{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.BaseURL != "https://b.example/v3/index.json" {
+		t.Errorf("BaseURL = %q, want env-selected profile b's URL", c.BaseURL)
+	}
+}
+
+func TestClientFromConfig_NoURL(t *testing.T) {
+	cfg := &config.Config{
+		CurrentProfile: "empty",
+		Profiles:       []config.Profile{{Name: "empty"}},
+	}
+	if _, err := ClientFromConfig(cfg, Overrides{}); err == nil {
+		t.Fatal("expected error for profile with no URL")
+	}
+}

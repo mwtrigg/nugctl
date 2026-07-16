@@ -3,22 +3,12 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/mwtrigg/nugctl/internal/client"
-	"github.com/mwtrigg/nugctl/internal/config"
 	"github.com/mwtrigg/nugctl/internal/output"
+	"github.com/mwtrigg/nugctl/internal/resolve"
 	"github.com/spf13/cobra"
-)
-
-// Environment variables slot in between CLI flags and the config file:
-// CLI flag > env var > profile (config file) > default.
-const (
-	envProfile  = "NUGCTL_PROFILE"
-	envURL      = "NUGCTL_URL"
-	envAPIKey   = "NUGCTL_API_KEY"
-	envInsecure = "NUGCTL_INSECURE"
 )
 
 var (
@@ -50,12 +40,12 @@ func Execute(version string) {
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVarP(&flagProfile, "profile", "p", "", "profile to use (env: "+envProfile+")")
-	rootCmd.PersistentFlags().StringVar(&flagURL, "url", "", "override feed URL (env: "+envURL+")")
-	rootCmd.PersistentFlags().StringVar(&flagAPIKey, "api-key", "", "override API key (env: "+envAPIKey+")")
+	rootCmd.PersistentFlags().StringVarP(&flagProfile, "profile", "p", "", "profile to use (env: "+resolve.EnvProfile+")")
+	rootCmd.PersistentFlags().StringVar(&flagURL, "url", "", "override feed URL (env: "+resolve.EnvURL+")")
+	rootCmd.PersistentFlags().StringVar(&flagAPIKey, "api-key", "", "override API key (env: "+resolve.EnvAPIKey+")")
 	rootCmd.PersistentFlags().StringVarP(&flagOutput, "output", "o", "table", "output format: table|json|yaml")
 	rootCmd.PersistentFlags().BoolVarP(&flagVerbose, "verbose", "v", false, "verbose HTTP logging")
-	rootCmd.PersistentFlags().BoolVar(&flagInsecure, "insecure", false, "skip TLS certificate verification, accept self-signed certs (env: "+envInsecure+")")
+	rootCmd.PersistentFlags().BoolVar(&flagInsecure, "insecure", false, "skip TLS certificate verification, accept self-signed certs (env: "+resolve.EnvInsecure+")")
 	rootCmd.PersistentFlags().BoolVarP(&flagAllProperties, "all-properties", "A", false, "include all available properties in output")
 	rootCmd.PersistentFlags().StringSliceVar(&flagProperties, "properties", nil, "specific properties to include (comma-separated or repeated)")
 
@@ -70,50 +60,14 @@ func init() {
 // resolveClient loads config and returns a ready NuGet client.
 // For each setting, precedence is: CLI flag > env var > profile (config file) > default.
 func resolveClient() (*client.Client, error) {
-	cfg, err := config.Load()
-	if err != nil {
-		return nil, fmt.Errorf("loading config: %w", err)
-	}
-
-	profileName := flagProfile
-	if profileName == "" {
-		profileName = os.Getenv(envProfile)
-	}
-	prof, err := cfg.ActiveProfile(profileName)
-	if err != nil {
-		return nil, err
-	}
-
-	u := prof.URL
-	if v := os.Getenv(envURL); v != "" {
-		u = v
-	}
-	if flagURL != "" {
-		u = flagURL
-	}
-	if u == "" {
-		return nil, fmt.Errorf("no URL configured for profile %q", prof.Name)
-	}
-
-	k := prof.APIKey
-	if v := os.Getenv(envAPIKey); v != "" {
-		k = v
-	}
-	if flagAPIKey != "" {
-		k = flagAPIKey
-	}
-
-	insecure := prof.Insecure
-	if v := os.Getenv(envInsecure); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			insecure = b
-		}
-	}
-	if rootCmd.PersistentFlags().Lookup("insecure").Changed {
-		insecure = flagInsecure
-	}
-
-	return client.New(u, k, flagVerbose, insecure), nil
+	return resolve.Client(resolve.Overrides{
+		Profile:     flagProfile,
+		URL:         flagURL,
+		APIKey:      flagAPIKey,
+		Insecure:    flagInsecure,
+		InsecureSet: rootCmd.PersistentFlags().Lookup("insecure").Changed,
+		Verbose:     flagVerbose,
+	})
 }
 
 // hasProperty returns true if prop is in --properties or --all-properties is set.
