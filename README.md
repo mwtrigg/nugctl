@@ -79,6 +79,18 @@ NUGCTL_URL=https://feed.internal/v3/index.json NUGCTL_INSECURE=true nugctl feed 
 `--insecure` skips TLS certificate verification (equivalent to `curl -k`) — use it for
 self-signed or internally-issued certs, not for feeds you don't trust.
 
+## Service index caching
+
+`nugctl` caches each feed's service index (the resource-type → URL map from `index.json`)
+in `~/.config/nugctl/cache/`, keyed by feed URL. A feed's resource URLs essentially never
+change, so this avoids an extra request to `index.json` before every command. The cache is
+revalidated with a conditional GET (ETag/Last-Modified) once it's older than 30 minutes,
+and any command that hits a 404 against a cached resource URL transparently re-fetches the
+index and retries once before failing.
+
+Use `--no-cache` (env: `NUGCTL_NO_CACHE`) to bypass it for one call, or `nugctl cache clear`
+to remove it entirely.
+
 ## Commands
 
 | Command | Description |
@@ -97,6 +109,7 @@ self-signed or internally-issued certs, not for feeds you don't trust.
 | `nugctl package unlist <id>` | Unlist (or hard-delete) a package version |
 | `nugctl package deprecate <id>` | Mark a package version as deprecated |
 | `nugctl package undeprecate <id>` | Clear deprecation from a package version |
+| `nugctl cache clear` | Remove all cached feed service indexes |
 | `nugctl upgrade` | Upgrade nugctl to the latest release |
 
 `package` can also be invoked as `pkg` or `nupkg`. Run any command with `--help` for its

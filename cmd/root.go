@@ -18,6 +18,7 @@ var (
 	flagOutput        string
 	flagVerbose       bool
 	flagInsecure      bool
+	flagNoCache       bool
 	flagAllProperties bool
 	flagProperties    []string
 )
@@ -46,6 +47,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&flagOutput, "output", "o", "table", "output format: table|json|yaml")
 	rootCmd.PersistentFlags().BoolVarP(&flagVerbose, "verbose", "v", false, "verbose HTTP logging")
 	rootCmd.PersistentFlags().BoolVar(&flagInsecure, "insecure", false, "skip TLS certificate verification, accept self-signed certs (env: "+resolve.EnvInsecure+")")
+	rootCmd.PersistentFlags().BoolVar(&flagNoCache, "no-cache", false, "bypass the cached service index and always re-fetch it (env: "+resolve.EnvNoCache+")")
 	rootCmd.PersistentFlags().BoolVarP(&flagAllProperties, "all-properties", "A", false, "include all available properties in output")
 	rootCmd.PersistentFlags().StringSliceVar(&flagProperties, "properties", nil, "specific properties to include (comma-separated or repeated)")
 
@@ -53,6 +55,7 @@ func init() {
 	rootCmd.AddCommand(feedCmd)
 	rootCmd.AddCommand(packageCmd)
 	rootCmd.AddCommand(profileCmd)
+	rootCmd.AddCommand(cacheCmd)
 	rootCmd.AddCommand(upgradeCmd)
 	rootCmd.AddCommand(completionCmd)
 }
@@ -67,6 +70,8 @@ func resolveClient() (*client.Client, error) {
 		Insecure:    flagInsecure,
 		InsecureSet: rootCmd.PersistentFlags().Lookup("insecure").Changed,
 		Verbose:     flagVerbose,
+		NoCache:     flagNoCache,
+		NoCacheSet:  rootCmd.PersistentFlags().Lookup("no-cache").Changed,
 	})
 }
 

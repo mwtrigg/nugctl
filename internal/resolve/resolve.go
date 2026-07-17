@@ -17,10 +17,11 @@ const (
 	EnvURL      = "NUGCTL_URL"
 	EnvAPIKey   = "NUGCTL_API_KEY"
 	EnvInsecure = "NUGCTL_INSECURE"
+	EnvNoCache  = "NUGCTL_NO_CACHE"
 )
 
 // Overrides carries explicit values that win over env vars and the profile
-// file, mirroring nugctl's CLI flags. InsecureSet distinguishes "the insecure
+// file, mirroring nugctl's CLI flags. InsecureSet/NoCacheSet distinguish "the
 // flag was explicitly passed" from "the flag was left untouched" (the same
 // distinction cobra's Flag.Changed makes).
 type Overrides struct {
@@ -30,6 +31,8 @@ type Overrides struct {
 	Insecure    bool
 	InsecureSet bool
 	Verbose     bool
+	NoCache     bool
+	NoCacheSet  bool
 }
 
 // Client loads the config file and returns a ready NuGet client, applying the
@@ -84,5 +87,15 @@ func ClientFromConfig(cfg *config.Config, ov Overrides) (*client.Client, error) 
 		insecure = ov.Insecure
 	}
 
-	return client.New(u, k, ov.Verbose, insecure), nil
+	noCache := false
+	if v := os.Getenv(EnvNoCache); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			noCache = b
+		}
+	}
+	if ov.NoCacheSet {
+		noCache = ov.NoCache
+	}
+
+	return client.New(u, k, ov.Verbose, insecure, noCache), nil
 }

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type Client struct {
@@ -19,11 +20,12 @@ type Client struct {
 	APIKey     string
 	Verbose    bool
 	Insecure   bool
+	NoCache    bool
 	httpClient *http.Client
 	index      *ServiceIndex
 }
 
-func New(baseURL, apiKey string, verbose, insecure bool) *Client {
+func New(baseURL, apiKey string, verbose, insecure, noCache bool) *Client {
 	transport := &http.Transport{}
 	if insecure {
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
@@ -34,6 +36,7 @@ func New(baseURL, apiKey string, verbose, insecure bool) *Client {
 		APIKey:     apiKey,
 		Verbose:    verbose,
 		Insecure:   insecure,
+		NoCache:    noCache,
 		httpClient: &http.Client{Transport: transport},
 	}
 }
@@ -51,22 +54,85 @@ type Resource struct {
 	Comment string `json:"comment,omitempty"`
 }
 
+// ServiceIndex returns the feed's service index, preferring (in order) the
+// in-process cache, a fresh on-disk cache, and finally the network — a
+// running feed's resource URLs change essentially never, so official NuGet
+// clients treat the index as effectively static per feed.
 func (c *Client) ServiceIndex() (*ServiceIndex, error) {
 	if c.index != nil {
 		return c.index, nil
 	}
+	if !c.NoCache {
+		if entry := loadIndexCache(c.BaseURL); entry != nil && time.Since(entry.FetchedAt) < indexCacheTTL {
+			idx := entry.Index
+			c.index = &idx
+			return c.index, nil
+		}
+	}
 	return c.RefreshServiceIndex()
 }
 
-// RefreshServiceIndex re-fetches the service index, bypassing the cache
-// ServiceIndex keeps after the first successful call.
+// RefreshServiceIndex re-fetches the service index, bypassing the in-process
+// and on-disk cache freshness check (though it still uses a conditional GET
+// against any on-disk ETag/Last-Modified, so a still-current feed costs a
+// cheap 304 rather than a full response).
 func (c *Client) RefreshServiceIndex() (*ServiceIndex, error) {
+	var prevEntry *indexCacheEntry
+	if !c.NoCache {
+		prevEntry = loadIndexCache(c.BaseURL)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, c.BaseURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	if prevEntry != nil {
+		if prevEntry.ETag != "" {
+			req.Header.Set("If-None-Match", prevEntry.ETag)
+		}
+		if prevEntry.LastModified != "" {
+			req.Header.Set("If-Modified-Since", prevEntry.LastModified)
+		}
+	}
+	if c.APIKey != "" {
+		req.Header.Set("X-NuGet-ApiKey", c.APIKey)
+	}
+	req.Header.Set("Accept", "application/json")
+	if c.Verbose {
+		fmt.Fprintf(os.Stderr, "GET %s\n", c.BaseURL)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, networkError(c.BaseURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotModified && prevEntry != nil {
+		idx := prevEntry.Index
+		c.index = &idx
+		prevEntry.FetchedAt = time.Now()
+		_ = saveIndexCache(c.BaseURL, prevEntry)
+		return c.index, nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, categorize(resp.StatusCode, string(body), c.BaseURL)
+	}
+
 	var idx ServiceIndex
-	if err := c.get(c.BaseURL, &idx); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&idx); err != nil {
 		return nil, err
 	}
 	c.index = &idx
-	return &idx, nil
+	if !c.NoCache {
+		_ = saveIndexCache(c.BaseURL, &indexCacheEntry{
+			Index:        idx,
+			FetchedAt:    time.Now(),
+			ETag:         resp.Header.Get("ETag"),
+			LastModified: resp.Header.Get("Last-Modified"),
+		})
+	}
+	return c.index, nil
 }
 
 func (c *Client) resourceURL(typePrefix string) (string, error) {
@@ -80,6 +146,34 @@ func (c *Client) resourceURL(typePrefix string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("service index has no resource of type %q", typePrefix)
+}
+
+// withResource resolves the resource URL for typePrefix (falling back to
+// fallback if the feed's service index has none) and runs action against it.
+// If action fails with a 404, the cached service index may simply be stale
+// (e.g. the feed was reconfigured behind an unchanged URL), so it's
+// refreshed and action is retried exactly once before the error is returned —
+// a stale cache degrades to one extra round trip, never a hard failure.
+func (c *Client) withResource(typePrefix, fallback string, action func(base string) error) error {
+	base, err := c.resourceURL(typePrefix)
+	if err != nil {
+		base = fallback
+	}
+	err = action(base)
+	if err == nil || !IsNotFound(err) {
+		return err
+	}
+	if _, rerr := c.RefreshServiceIndex(); rerr != nil {
+		return err
+	}
+	retryBase, rerr := c.resourceURL(typePrefix)
+	if rerr != nil {
+		retryBase = fallback
+	}
+	if retryBase == base {
+		return err
+	}
+	return action(retryBase)
 }
 
 // --- Search ---
@@ -102,22 +196,20 @@ type SearchPackage struct {
 }
 
 func (c *Client) Search(q string, skip, take int, prerelease bool) (*SearchResult, error) {
-	base, err := c.resourceURL("SearchQueryService")
-	if err != nil {
-		// BaGetter fallback
-		base = c.BaseURL + "/v3/search"
-	}
-	u, _ := url.Parse(base)
-	params := url.Values{}
-	params.Set("q", q)
-	params.Set("skip", fmt.Sprintf("%d", skip))
-	params.Set("take", fmt.Sprintf("%d", take))
-	if prerelease {
-		params.Set("prerelease", "true")
-	}
-	u.RawQuery = params.Encode()
 	var result SearchResult
-	return &result, c.get(u.String(), &result)
+	err := c.withResource("SearchQueryService", c.BaseURL+"/v3/search", func(base string) error {
+		u, _ := url.Parse(base)
+		params := url.Values{}
+		params.Set("q", q)
+		params.Set("skip", fmt.Sprintf("%d", skip))
+		params.Set("take", fmt.Sprintf("%d", take))
+		if prerelease {
+			params.Set("prerelease", "true")
+		}
+		u.RawQuery = params.Encode()
+		return c.get(u.String(), &result)
+	})
+	return &result, err
 }
 
 // --- Registration ---
@@ -174,33 +266,26 @@ type CatalogEntry struct {
 }
 
 func (c *Client) Registration(id string) (*RegistrationIndex, error) {
-	base, err := c.resourceURL("RegistrationsBaseUrl")
-	if err != nil {
-		base = c.BaseURL + "/v3/registration"
-	}
-	regURL := strings.TrimRight(base, "/") + "/" + strings.ToLower(id) + "/index.json"
 	var idx RegistrationIndex
-	return &idx, c.get(regURL, &idx)
+	err := c.withResource("RegistrationsBaseUrl", c.BaseURL+"/v3/registration", func(base string) error {
+		regURL := strings.TrimRight(base, "/") + "/" + strings.ToLower(id) + "/index.json"
+		return c.get(regURL, &idx)
+	})
+	return &idx, err
 }
 
 func (c *Client) RegistrationVersion(id, version string) (*CatalogEntry, error) {
-	base, err := c.resourceURL("RegistrationsBaseUrl")
-	if err != nil {
-		base = c.BaseURL + "/v3/registration"
-	}
-	regURL := strings.TrimRight(base, "/") + "/" + strings.ToLower(id) + "/" + strings.ToLower(version) + ".json"
 	var leaf RegistrationLeaf
-	return &leaf.CatalogEntry, c.get(regURL, &leaf)
+	err := c.withResource("RegistrationsBaseUrl", c.BaseURL+"/v3/registration", func(base string) error {
+		regURL := strings.TrimRight(base, "/") + "/" + strings.ToLower(id) + "/" + strings.ToLower(version) + ".json"
+		return c.get(regURL, &leaf)
+	})
+	return &leaf.CatalogEntry, err
 }
 
 // --- Push ---
 
 func (c *Client) Push(path string) error {
-	base, err := c.resourceURL("PackagePublish")
-	if err != nil {
-		base = c.BaseURL + "/api/v2/package"
-	}
-
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -217,87 +302,89 @@ func (c *Client) Push(path string) error {
 		return err
 	}
 	w.Close()
+	contentType := w.FormDataContentType()
+	payload := buf.Bytes()
 
-	if c.Verbose {
-		fmt.Fprintf(os.Stderr, "PUT %s\n", base)
-	}
-	req, err := http.NewRequest(http.MethodPut, base, &buf)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", w.FormDataContentType())
-	if c.APIKey != "" {
-		req.Header.Set("X-NuGet-ApiKey", c.APIKey)
-	}
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return networkError(base, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return categorize(resp.StatusCode, string(body), base)
-	}
-	return nil
+	return c.withResource("PackagePublish", c.BaseURL+"/api/v2/package", func(base string) error {
+		if c.Verbose {
+			fmt.Fprintf(os.Stderr, "PUT %s\n", base)
+		}
+		req, err := http.NewRequest(http.MethodPut, base, bytes.NewReader(payload))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", contentType)
+		if c.APIKey != "" {
+			req.Header.Set("X-NuGet-ApiKey", c.APIKey)
+		}
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return networkError(base, err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			body, _ := io.ReadAll(resp.Body)
+			return categorize(resp.StatusCode, string(body), base)
+		}
+		return nil
+	})
 }
 
 // --- Pull ---
 
 func (c *Client) Pull(id, version, outDir string) (string, error) {
-	base, err := c.resourceURL("PackageBaseAddress")
-	if err != nil {
-		base = c.BaseURL + "/v3/package"
-	}
-	dlURL := fmt.Sprintf("%s/%s/%s/%s.%s.nupkg",
-		strings.TrimRight(base, "/"),
-		strings.ToLower(id),
-		strings.ToLower(version),
-		strings.ToLower(id),
-		strings.ToLower(version),
-	)
+	var outFile string
+	err := c.withResource("PackageBaseAddress", c.BaseURL+"/v3/package", func(base string) error {
+		dlURL := fmt.Sprintf("%s/%s/%s/%s.%s.nupkg",
+			strings.TrimRight(base, "/"),
+			strings.ToLower(id),
+			strings.ToLower(version),
+			strings.ToLower(id),
+			strings.ToLower(version),
+		)
 
-	if c.Verbose {
-		fmt.Fprintf(os.Stderr, "GET %s\n", dlURL)
-	}
-	req, err := http.NewRequest(http.MethodGet, dlURL, nil)
-	if err != nil {
-		return "", err
-	}
-	if c.APIKey != "" {
-		req.Header.Set("X-NuGet-ApiKey", c.APIKey)
-	}
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", networkError(dlURL, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return "", categorize(resp.StatusCode, string(body), dlURL)
-	}
+		if c.Verbose {
+			fmt.Fprintf(os.Stderr, "GET %s\n", dlURL)
+		}
+		req, err := http.NewRequest(http.MethodGet, dlURL, nil)
+		if err != nil {
+			return err
+		}
+		if c.APIKey != "" {
+			req.Header.Set("X-NuGet-ApiKey", c.APIKey)
+		}
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return networkError(dlURL, err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			body, _ := io.ReadAll(resp.Body)
+			return categorize(resp.StatusCode, string(body), dlURL)
+		}
 
-	outFile := filepath.Join(outDir, fmt.Sprintf("%s.%s.nupkg", id, version))
-	f, err := os.Create(outFile)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	if _, err := io.Copy(f, resp.Body); err != nil {
-		return "", err
-	}
-	return outFile, nil
+		f, err := os.Create(filepath.Join(outDir, fmt.Sprintf("%s.%s.nupkg", id, version)))
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		if _, err := io.Copy(f, resp.Body); err != nil {
+			return err
+		}
+		outFile = f.Name()
+		return nil
+	})
+	return outFile, err
 }
 
 // --- Delete ---
 
 func (c *Client) Delete(id, version string) error {
-	base, err := c.resourceURL("PackagePublish")
-	if err != nil {
-		base = c.BaseURL + "/api/v2/package"
-	}
-	delURL := fmt.Sprintf("%s/%s/%s", strings.TrimRight(base, "/"), id, version)
-	_, err = c.doRequest(http.MethodDelete, delURL, nil, "")
-	return err
+	return c.withResource("PackagePublish", c.BaseURL+"/api/v2/package", func(base string) error {
+		delURL := fmt.Sprintf("%s/%s/%s", strings.TrimRight(base, "/"), id, version)
+		_, err := c.doRequest(http.MethodDelete, delURL, nil, "")
+		return err
+	})
 }
 
 // --- Deprecation ---
@@ -313,41 +400,38 @@ type DeprecationRequest struct {
 }
 
 func (c *Client) Deprecate(id, version string, req DeprecationRequest) error {
-	base, err := c.resourceURL("PackagePublish")
-	if err != nil {
-		base = c.BaseURL + "/api/v2/package"
-	}
-	url := fmt.Sprintf("%s/%s/%s/deprecations", strings.TrimRight(base, "/"), id, version)
-	if c.Verbose {
-		fmt.Fprintf(os.Stderr, "PUT %s\n", url)
-	}
-
 	body, err := json.Marshal(req)
 	if err != nil {
 		return err
 	}
-	httpReq, err := http.NewRequest(http.MethodPut, url, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if c.APIKey != "" {
-		httpReq.Header.Set("X-NuGet-ApiKey", c.APIKey)
-	}
+	return c.withResource("PackagePublish", c.BaseURL+"/api/v2/package", func(base string) error {
+		depURL := fmt.Sprintf("%s/%s/%s/deprecations", strings.TrimRight(base, "/"), id, version)
+		if c.Verbose {
+			fmt.Fprintf(os.Stderr, "PUT %s\n", depURL)
+		}
+		httpReq, err := http.NewRequest(http.MethodPut, depURL, bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		if c.APIKey != "" {
+			httpReq.Header.Set("X-NuGet-ApiKey", c.APIKey)
+		}
 
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return networkError(url, err)
-	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			return networkError(depURL, err)
+		}
+		defer resp.Body.Close()
+		respBody, _ := io.ReadAll(resp.Body)
 
-	switch resp.StatusCode {
-	case http.StatusOK, http.StatusNoContent, http.StatusCreated:
-		return nil
-	default:
-		return categorize(resp.StatusCode, string(respBody), url)
-	}
+		switch resp.StatusCode {
+		case http.StatusOK, http.StatusNoContent, http.StatusCreated:
+			return nil
+		default:
+			return categorize(resp.StatusCode, string(respBody), depURL)
+		}
+	})
 }
 
 func (c *Client) Undeprecate(id, version string) error {
