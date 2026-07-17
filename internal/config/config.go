@@ -9,10 +9,12 @@ import (
 )
 
 type Profile struct {
-	Name     string `yaml:"name"`
-	URL      string `yaml:"url"`
-	APIKey   string `yaml:"api_key,omitempty"`
-	Insecure bool   `yaml:"insecure,omitempty"`
+	Name          string `yaml:"name"`
+	URL           string `yaml:"url"`
+	APIKey        string `yaml:"api_key,omitempty"`
+	Insecure      bool   `yaml:"insecure,omitempty"`
+	BasicAuthUser string `yaml:"basic_auth_user,omitempty"`
+	BasicAuthPass string `yaml:"basic_auth_pass,omitempty"`
 }
 
 type Config struct {

@@ -13,11 +13,13 @@ import (
 )
 
 const (
-	EnvProfile  = "NUGCTL_PROFILE"
-	EnvURL      = "NUGCTL_URL"
-	EnvAPIKey   = "NUGCTL_API_KEY"
-	EnvInsecure = "NUGCTL_INSECURE"
-	EnvNoCache  = "NUGCTL_NO_CACHE"
+	EnvProfile       = "NUGCTL_PROFILE"
+	EnvURL           = "NUGCTL_URL"
+	EnvAPIKey        = "NUGCTL_API_KEY"
+	EnvInsecure      = "NUGCTL_INSECURE"
+	EnvNoCache       = "NUGCTL_NO_CACHE"
+	EnvBasicAuthUser = "NUGCTL_BASIC_AUTH_USER"
+	EnvBasicAuthPass = "NUGCTL_BASIC_AUTH_PASS"
 )
 
 // Overrides carries explicit values that win over env vars and the profile
@@ -25,14 +27,16 @@ const (
 // flag was explicitly passed" from "the flag was left untouched" (the same
 // distinction cobra's Flag.Changed makes).
 type Overrides struct {
-	Profile     string
-	URL         string
-	APIKey      string
-	Insecure    bool
-	InsecureSet bool
-	Verbose     bool
-	NoCache     bool
-	NoCacheSet  bool
+	Profile       string
+	URL           string
+	APIKey        string
+	Insecure      bool
+	InsecureSet   bool
+	Verbose       bool
+	NoCache       bool
+	NoCacheSet    bool
+	BasicAuthUser string
+	BasicAuthPass string
 }
 
 // Client loads the config file and returns a ready NuGet client, applying the
@@ -97,5 +101,24 @@ func ClientFromConfig(cfg *config.Config, ov Overrides) (*client.Client, error) 
 		noCache = ov.NoCache
 	}
 
-	return client.New(u, k, ov.Verbose, insecure, noCache), nil
+	basicUser := prof.BasicAuthUser
+	if v := os.Getenv(EnvBasicAuthUser); v != "" {
+		basicUser = v
+	}
+	if ov.BasicAuthUser != "" {
+		basicUser = ov.BasicAuthUser
+	}
+
+	basicPass := prof.BasicAuthPass
+	if v := os.Getenv(EnvBasicAuthPass); v != "" {
+		basicPass = v
+	}
+	if ov.BasicAuthPass != "" {
+		basicPass = ov.BasicAuthPass
+	}
+
+	c := client.New(u, k, ov.Verbose, insecure, noCache)
+	c.BasicAuthUser = basicUser
+	c.BasicAuthPass = basicPass
+	return c, nil
 }

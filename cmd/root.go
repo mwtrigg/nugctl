@@ -15,6 +15,8 @@ var (
 	flagProfile       string
 	flagURL           string
 	flagAPIKey        string
+	flagBasicAuthUser string
+	flagBasicAuthPass string
 	flagOutput        string
 	flagVerbose       bool
 	flagInsecure      bool
@@ -44,6 +46,8 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&flagProfile, "profile", "p", "", "profile to use (env: "+resolve.EnvProfile+")")
 	rootCmd.PersistentFlags().StringVar(&flagURL, "url", "", "override feed URL (env: "+resolve.EnvURL+")")
 	rootCmd.PersistentFlags().StringVar(&flagAPIKey, "api-key", "", "override API key (env: "+resolve.EnvAPIKey+")")
+	rootCmd.PersistentFlags().StringVar(&flagBasicAuthUser, "basic-auth-user", "", "HTTP Basic Auth username (env: "+resolve.EnvBasicAuthUser+")")
+	rootCmd.PersistentFlags().StringVar(&flagBasicAuthPass, "basic-auth-pass", "", "HTTP Basic Auth password (env: "+resolve.EnvBasicAuthPass+")")
 	rootCmd.PersistentFlags().StringVarP(&flagOutput, "output", "o", "table", "output format: table|json|yaml")
 	rootCmd.PersistentFlags().BoolVarP(&flagVerbose, "verbose", "v", false, "verbose HTTP logging")
 	rootCmd.PersistentFlags().BoolVar(&flagInsecure, "insecure", false, "skip TLS certificate verification, accept self-signed certs (env: "+resolve.EnvInsecure+")")
@@ -64,14 +68,16 @@ func init() {
 // For each setting, precedence is: CLI flag > env var > profile (config file) > default.
 func resolveClient() (*client.Client, error) {
 	return resolve.Client(resolve.Overrides{
-		Profile:     flagProfile,
-		URL:         flagURL,
-		APIKey:      flagAPIKey,
-		Insecure:    flagInsecure,
-		InsecureSet: rootCmd.PersistentFlags().Lookup("insecure").Changed,
-		Verbose:     flagVerbose,
-		NoCache:     flagNoCache,
-		NoCacheSet:  rootCmd.PersistentFlags().Lookup("no-cache").Changed,
+		Profile:       flagProfile,
+		URL:           flagURL,
+		APIKey:        flagAPIKey,
+		Insecure:      flagInsecure,
+		InsecureSet:   rootCmd.PersistentFlags().Lookup("insecure").Changed,
+		Verbose:       flagVerbose,
+		NoCache:       flagNoCache,
+		NoCacheSet:    rootCmd.PersistentFlags().Lookup("no-cache").Changed,
+		BasicAuthUser: flagBasicAuthUser,
+		BasicAuthPass: flagBasicAuthPass,
 	})
 }
 

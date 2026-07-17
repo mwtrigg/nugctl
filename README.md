@@ -61,12 +61,14 @@ Every connection setting can be set three ways, in this order of precedence:
 
 **CLI flag > environment variable > profile (config file) > default**
 
-| Setting        | Flag         | Env var             | Profile field |
-|----------------|--------------|----------------------|---------------|
-| Active profile | `--profile`, `-p` | `NUGCTL_PROFILE` | `current_profile` |
-| Feed URL       | `--url`      | `NUGCTL_URL`         | `url` |
-| API key        | `--api-key`  | `NUGCTL_API_KEY`     | `api_key` |
-| Skip TLS verify| `--insecure` | `NUGCTL_INSECURE`    | `insecure` |
+| Setting          | Flag                | Env var                 | Profile field      |
+|------------------|---------------------|--------------------------|--------------------|
+| Active profile   | `--profile`, `-p`   | `NUGCTL_PROFILE`         | `current_profile`  |
+| Feed URL         | `--url`             | `NUGCTL_URL`             | `url`              |
+| API key          | `--api-key`         | `NUGCTL_API_KEY`         | `api_key`          |
+| Basic Auth user  | `--basic-auth-user` | `NUGCTL_BASIC_AUTH_USER` | `basic_auth_user`  |
+| Basic Auth pass  | `--basic-auth-pass` | `NUGCTL_BASIC_AUTH_PASS` | `basic_auth_pass`  |
+| Skip TLS verify  | `--insecure`        | `NUGCTL_INSECURE`        | `insecure`         |
 
 This means a single flag or env var lets you override a profile for one call without
 editing the config file — handy in CI, or for pointing at a feed with a self-signed cert:
@@ -78,6 +80,20 @@ NUGCTL_URL=https://feed.internal/v3/index.json NUGCTL_INSECURE=true nugctl feed 
 
 `--insecure` skips TLS certificate verification (equivalent to `curl -k`) — use it for
 self-signed or internally-issued certs, not for feeds you don't trust.
+
+### HTTP Basic Auth
+
+Some feeds sit behind a reverse proxy or gateway that gates access with its own HTTP
+Basic Auth, separate from the feed's own API key. Set `--basic-auth-user` (and
+`--basic-auth-pass`, prompted for if omitted) alongside whatever the feed itself
+requires — an API key and Basic Auth credentials are sent together when both are set:
+
+```sh
+nugctl auth login --name proxied --url https://feed.internal/v3/index.json \
+  --api-key XXXX --basic-auth-user svc-nuget --basic-auth-pass XXXX
+```
+
+`nugctl auth logout` clears all stored credentials (API key and Basic Auth) from a profile.
 
 ## Service index caching
 
