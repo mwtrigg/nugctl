@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -58,13 +59,68 @@ var upgradeCmd = &cobra.Command{
 		if err := os.Chmod(tmp, 0o755); err != nil {
 			return err
 		}
-		if err := os.Rename(tmp, self); err != nil {
+		if err := replaceSelf(self, tmp); err != nil {
 			os.Remove(tmp)
-			return fmt.Errorf("replacing binary: %w (try with sudo?)", err)
+			hint := "try with sudo?"
+			if runtime.GOOS == "windows" {
+				hint = "try again, or replace the binary manually while nugctl is not running"
+			}
+			return fmt.Errorf("replacing binary: %w (%s)", err, hint)
 		}
 		fmt.Printf("Updated %s → %s\n", current, tag)
 		return nil
 	},
+}
+
+// replaceSelf installs tmp over self, the running executable.
+//
+// On Windows this can't be done with a single rename: the OS won't let you
+// overwrite a file that's mapped into a running process, and a
+// freshly-downloaded file is often briefly locked by antivirus real-time
+// scanning. replaceViaShuffle works around both.
+func replaceSelf(self, tmp string) error {
+	if runtime.GOOS != "windows" {
+		return renameWithRetry(tmp, self)
+	}
+	return replaceViaShuffle(self, tmp)
+}
+
+// replaceViaShuffle installs tmp over self by moving self aside first
+// (renaming an open file is allowed even though overwriting one isn't),
+// moving tmp into place, and cleaning up the old binary on a best-effort
+// basis. If installing tmp fails, self is restored from the moved-aside
+// copy so the caller isn't left without a working binary. Each rename is
+// retried briefly to ride out a transient AV lock.
+func replaceViaShuffle(self, tmp string) error {
+	old := self + ".old"
+	os.Remove(old) // leftover from an interrupted previous upgrade
+	if err := renameWithRetry(self, old); err != nil {
+		return fmt.Errorf("moving current binary aside: %w", err)
+	}
+	if err := renameWithRetry(tmp, self); err != nil {
+		renameWithRetry(old, self) // best-effort restore
+		return fmt.Errorf("installing new binary: %w", err)
+	}
+	os.Remove(old) // best-effort cleanup; a leftover .old is harmless
+	return nil
+}
+
+// renameAttempts/renameRetryDelay are vars (not consts) so tests can shrink
+// them instead of a real upgrade's retry loop running at test speed.
+var (
+	renameAttempts   = 10
+	renameRetryDelay = 200 * time.Millisecond
+)
+
+func renameWithRetry(oldpath, newpath string) error {
+	var err error
+	for i := 0; i < renameAttempts; i++ {
+		if err = os.Rename(oldpath, newpath); err == nil {
+			return nil
+		}
+		time.Sleep(renameRetryDelay)
+	}
+	return err
 }
 
 type githubRelease struct {
