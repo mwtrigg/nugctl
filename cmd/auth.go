@@ -22,12 +22,15 @@ var authLoginCmd = &cobra.Command{
 	Short: "Add or update a profile with feed credentials",
 	Example: `  nugctl auth login
   nugctl auth login --name prod --url https://nuget.example.com/v3/index.json --api-key XXXX
-  nugctl auth login --name self-signed --url https://feed.internal/v3/index.json --insecure`,
+  nugctl auth login --name self-signed --url https://feed.internal/v3/index.json --insecure
+  nugctl auth login --name proxied --url https://feed.internal/v3/index.json --basic-auth-user svc-nuget`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		profileName, _ := cmd.Flags().GetString("name")
 		u, _ := cmd.Flags().GetString("url")
 		k, _ := cmd.Flags().GetString("api-key")
 		insecure, _ := cmd.Flags().GetBool("insecure")
+		basicUser, _ := cmd.Flags().GetString("basic-auth-user")
+		basicPass, _ := cmd.Flags().GetString("basic-auth-pass")
 
 		reader := bufio.NewReader(os.Stdin)
 
@@ -56,12 +59,35 @@ var authLoginCmd = &cobra.Command{
 				k = string(b)
 			}
 		}
+		if basicUser == "" {
+			fmt.Print("HTTP Basic Auth username (leave blank if not needed): ")
+			basicUser, _ = reader.ReadString('\n')
+			basicUser = strings.TrimSpace(basicUser)
+		}
+		if basicUser != "" && basicPass == "" {
+			fmt.Print("HTTP Basic Auth password: ")
+			b, err := term.ReadPassword(int(syscall.Stdin))
+			fmt.Println()
+			if err != nil {
+				basicPass, _ = reader.ReadString('\n')
+				basicPass = strings.TrimSpace(basicPass)
+			} else {
+				basicPass = string(b)
+			}
+		}
 
 		cfg, err := config.Load()
 		if err != nil {
 			return err
 		}
-		cfg.SetProfile(config.Profile{Name: profileName, URL: u, APIKey: k, Insecure: insecure})
+		cfg.SetProfile(config.Profile{
+			Name:          profileName,
+			URL:           u,
+			APIKey:        k,
+			Insecure:      insecure,
+			BasicAuthUser: basicUser,
+			BasicAuthPass: basicPass,
+		})
 		if cfg.CurrentProfile == "" {
 			cfg.CurrentProfile = profileName
 		}
@@ -75,7 +101,7 @@ var authLoginCmd = &cobra.Command{
 
 var authLogoutCmd = &cobra.Command{
 	Use:   "logout",
-	Short: "Remove API key from a profile",
+	Short: "Remove stored credentials (API key, Basic Auth) from a profile",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load()
 		if err != nil {
@@ -90,11 +116,13 @@ var authLogoutCmd = &cobra.Command{
 			return err
 		}
 		prof.APIKey = ""
+		prof.BasicAuthUser = ""
+		prof.BasicAuthPass = ""
 		cfg.SetProfile(*prof)
 		if err := config.Save(cfg); err != nil {
 			return err
 		}
-		fmt.Printf("API key removed from profile %q\n", name)
+		fmt.Printf("Credentials removed from profile %q\n", name)
 		return nil
 	},
 }
@@ -104,6 +132,8 @@ func init() {
 	authLoginCmd.Flags().String("url", "", "feed URL")
 	authLoginCmd.Flags().String("api-key", "", "API key")
 	authLoginCmd.Flags().Bool("insecure", false, "skip TLS certificate verification for this profile (accept self-signed certs)")
+	authLoginCmd.Flags().String("basic-auth-user", "", "HTTP Basic Auth username")
+	authLoginCmd.Flags().String("basic-auth-pass", "", "HTTP Basic Auth password")
 
 	authCmd.AddCommand(authLoginCmd)
 	authCmd.AddCommand(authLogoutCmd)

@@ -16,13 +16,15 @@ import (
 )
 
 type Client struct {
-	BaseURL    string
-	APIKey     string
-	Verbose    bool
-	Insecure   bool
-	NoCache    bool
-	httpClient *http.Client
-	index      *ServiceIndex
+	BaseURL       string
+	APIKey        string
+	BasicAuthUser string
+	BasicAuthPass string
+	Verbose       bool
+	Insecure      bool
+	NoCache       bool
+	httpClient    *http.Client
+	index         *ServiceIndex
 }
 
 func New(baseURL, apiKey string, verbose, insecure, noCache bool) *Client {
@@ -38,6 +40,19 @@ func New(baseURL, apiKey string, verbose, insecure, noCache bool) *Client {
 		Insecure:   insecure,
 		NoCache:    noCache,
 		httpClient: &http.Client{Transport: transport},
+	}
+}
+
+// setAuth attaches whichever credentials the client is configured with: a
+// NuGet API key header, HTTP Basic Auth (e.g. for a feed sitting behind a
+// reverse proxy that gates access separately from the feed's own API key),
+// or both at once.
+func (c *Client) setAuth(req *http.Request) {
+	if c.APIKey != "" {
+		req.Header.Set("X-NuGet-ApiKey", c.APIKey)
+	}
+	if c.BasicAuthUser != "" {
+		req.SetBasicAuth(c.BasicAuthUser, c.BasicAuthPass)
 	}
 }
 
@@ -94,9 +109,7 @@ func (c *Client) RefreshServiceIndex() (*ServiceIndex, error) {
 			req.Header.Set("If-Modified-Since", prevEntry.LastModified)
 		}
 	}
-	if c.APIKey != "" {
-		req.Header.Set("X-NuGet-ApiKey", c.APIKey)
-	}
+	c.setAuth(req)
 	req.Header.Set("Accept", "application/json")
 	if c.Verbose {
 		fmt.Fprintf(os.Stderr, "GET %s\n", c.BaseURL)
@@ -314,9 +327,7 @@ func (c *Client) Push(path string) error {
 			return err
 		}
 		req.Header.Set("Content-Type", contentType)
-		if c.APIKey != "" {
-			req.Header.Set("X-NuGet-ApiKey", c.APIKey)
-		}
+		c.setAuth(req)
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
 			return networkError(base, err)
@@ -350,9 +361,7 @@ func (c *Client) Pull(id, version, outDir string) (string, error) {
 		if err != nil {
 			return err
 		}
-		if c.APIKey != "" {
-			req.Header.Set("X-NuGet-ApiKey", c.APIKey)
-		}
+		c.setAuth(req)
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
 			return networkError(dlURL, err)
@@ -414,9 +423,7 @@ func (c *Client) Deprecate(id, version string, req DeprecationRequest) error {
 			return err
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
-		if c.APIKey != "" {
-			httpReq.Header.Set("X-NuGet-ApiKey", c.APIKey)
-		}
+		c.setAuth(httpReq)
 
 		resp, err := c.httpClient.Do(httpReq)
 		if err != nil {
@@ -449,9 +456,7 @@ func (c *Client) get(rawURL string, out interface{}) error {
 	if err != nil {
 		return err
 	}
-	if c.APIKey != "" {
-		req.Header.Set("X-NuGet-ApiKey", c.APIKey)
-	}
+	c.setAuth(req)
 	req.Header.Set("Accept", "application/json")
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -482,9 +487,7 @@ func (c *Client) doRequest(method, rawURL string, body []byte, contentType strin
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
-	if c.APIKey != "" {
-		req.Header.Set("X-NuGet-ApiKey", c.APIKey)
-	}
+	c.setAuth(req)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, networkError(rawURL, err)

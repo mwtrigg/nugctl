@@ -28,12 +28,16 @@ var profileListCmd = &cobra.Command{
 		case output.FormatYAML:
 			return output.PrintYAML(cfg.Profiles)
 		default:
-			headers := []string{"NAME", "URL", "HAS KEY", "INSECURE", "ACTIVE"}
+			headers := []string{"NAME", "URL", "HAS KEY", "BASIC AUTH", "INSECURE", "ACTIVE"}
 			rows := make([][]string, 0, len(cfg.Profiles))
 			for _, p := range cfg.Profiles {
 				hasKey := "no"
 				if p.APIKey != "" {
 					hasKey = "yes"
+				}
+				basicAuth := "no"
+				if p.BasicAuthUser != "" {
+					basicAuth = "yes"
 				}
 				insecure := "no"
 				if p.Insecure {
@@ -43,7 +47,7 @@ var profileListCmd = &cobra.Command{
 				if p.Name == cfg.CurrentProfile {
 					active = "*"
 				}
-				rows = append(rows, []string{p.Name, p.URL, hasKey, insecure, active})
+				rows = append(rows, []string{p.Name, p.URL, hasKey, basicAuth, insecure, active})
 			}
 			output.PrintTable(headers, rows)
 		}

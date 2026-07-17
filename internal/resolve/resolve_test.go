@@ -121,6 +121,60 @@ func TestClientFromConfig_EnvProfileOverride(t *testing.T) {
 	}
 }
 
+func TestClientFromConfig_BasicAuthFromProfile(t *testing.T) {
+	cfg := &config.Config{
+		CurrentProfile: "default",
+		Profiles: []config.Profile{
+			{Name: "default", URL: "https://profile.example/v3/index.json", BasicAuthUser: "profile-user", BasicAuthPass: "profile-pass"},
+		},
+	}
+	c, err := ClientFromConfig(cfg, Overrides{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.BasicAuthUser != "profile-user" || c.BasicAuthPass != "profile-pass" {
+		t.Errorf("BasicAuth = %q/%q, want profile-user/profile-pass", c.BasicAuthUser, c.BasicAuthPass)
+	}
+}
+
+func TestClientFromConfig_BasicAuthEnvOverridesProfile(t *testing.T) {
+	cfg := &config.Config{
+		CurrentProfile: "default",
+		Profiles: []config.Profile{
+			{Name: "default", URL: "https://profile.example/v3/index.json", BasicAuthUser: "profile-user", BasicAuthPass: "profile-pass"},
+		},
+	}
+	t.Setenv(EnvBasicAuthUser, "env-user")
+	t.Setenv(EnvBasicAuthPass, "env-pass")
+
+	c, err := ClientFromConfig(cfg, Overrides{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.BasicAuthUser != "env-user" || c.BasicAuthPass != "env-pass" {
+		t.Errorf("BasicAuth = %q/%q, want env-user/env-pass", c.BasicAuthUser, c.BasicAuthPass)
+	}
+}
+
+func TestClientFromConfig_BasicAuthFlagOverridesEnv(t *testing.T) {
+	cfg := &config.Config{
+		CurrentProfile: "default",
+		Profiles: []config.Profile{
+			{Name: "default", URL: "https://profile.example/v3/index.json", BasicAuthUser: "profile-user", BasicAuthPass: "profile-pass"},
+		},
+	}
+	t.Setenv(EnvBasicAuthUser, "env-user")
+	t.Setenv(EnvBasicAuthPass, "env-pass")
+
+	c, err := ClientFromConfig(cfg, Overrides{BasicAuthUser: "flag-user", BasicAuthPass: "flag-pass"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.BasicAuthUser != "flag-user" || c.BasicAuthPass != "flag-pass" {
+		t.Errorf("BasicAuth = %q/%q, want flag-user/flag-pass", c.BasicAuthUser, c.BasicAuthPass)
+	}
+}
+
 func TestClientFromConfig_NoURL(t *testing.T) {
 	cfg := &config.Config{
 		CurrentProfile: "empty",
