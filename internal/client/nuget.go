@@ -136,12 +136,30 @@ type RegistrationLeaf struct {
 	CatalogEntry CatalogEntry `json:"catalogEntry"`
 }
 
+// Tags unmarshals either shape a NuGet v3 feed may use for catalogEntry.tags:
+// a space-delimited string (nuget.org) or a JSON array of strings (BaGetter).
+type Tags []string
+
+func (t *Tags) UnmarshalJSON(data []byte) error {
+	var arr []string
+	if err := json.Unmarshal(data, &arr); err == nil {
+		*t = arr
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	*t = Tags(strings.Fields(s))
+	return nil
+}
+
 type CatalogEntry struct {
 	ID                       string `json:"id"`
 	Version                  string `json:"version"`
 	Description              string `json:"description"`
 	Authors                  string `json:"authors"`
-	Tags                     string `json:"tags"`
+	Tags                     Tags   `json:"tags"`
 	Published                string `json:"published"`
 	ProjectURL               string `json:"projectUrl,omitempty"`
 	LicenseURL               string `json:"licenseUrl,omitempty"`
