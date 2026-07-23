@@ -86,6 +86,35 @@ func TestRunNegative_NoCredentials_SkipsAuthCheck(t *testing.T) {
 	}
 }
 
+func TestRunNegative_GarbledCredentials_404IsWarnNotFail(t *testing.T) {
+	// A server that checks package existence before auth will 404 here
+	// regardless of the (bad) credentials — that's not proof it accepts bad
+	// credentials, just that this probe is inconclusive. Must not be a fail.
+	t.Setenv("HOME", t.TempDir())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Write([]byte(`{"version":"3.0.0","resources":[]}`))
+			return
+		}
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := client.New(srv.URL, "the-real-key", false, false, true)
+	r := &Report{}
+	runNegative(c, r)
+
+	var got Status
+	for _, chk := range r.Checks {
+		if chk.Name == "401/403 for garbled credentials" {
+			got = chk.Status
+		}
+	}
+	if got != StatusWarn {
+		t.Errorf("auth check = %s, want warn (existence-before-auth ordering is spec-legal, not a failure)", got)
+	}
+}
+
 func TestRunNegative_GarbledCredentials_ExpectsAuthRejection(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
