@@ -298,20 +298,16 @@ func (c *Client) RegistrationVersion(id, version string) (*CatalogEntry, error) 
 
 // --- Push ---
 
-func (c *Client) Push(path string) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
+// PushBytes uploads package bytes already read into memory. filename is
+// used for the multipart form's filename field only.
+func (c *Client) PushBytes(filename string, data []byte) error {
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
-	fw, err := w.CreateFormFile("package", filepath.Base(path))
+	fw, err := w.CreateFormFile("package", filename)
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(fw, f); err != nil {
+	if _, err := fw.Write(data); err != nil {
 		return err
 	}
 	w.Close()
@@ -341,10 +337,24 @@ func (c *Client) Push(path string) error {
 	})
 }
 
+func (c *Client) Push(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return err
+	}
+	return c.PushBytes(filepath.Base(path), data)
+}
+
 // --- Pull ---
 
-func (c *Client) Pull(id, version, outDir string) (string, error) {
-	var outFile string
+// PullBytes downloads a package version's .nupkg bytes without writing to disk.
+func (c *Client) PullBytes(id, version string) ([]byte, error) {
+	var data []byte
 	err := c.withResource("PackageBaseAddress", c.BaseURL+"/v3/package", func(base string) error {
 		dlURL := fmt.Sprintf("%s/%s/%s/%s.%s.nupkg",
 			strings.TrimRight(base, "/"),
@@ -371,19 +381,45 @@ func (c *Client) Pull(id, version, outDir string) (string, error) {
 			body, _ := io.ReadAll(resp.Body)
 			return categorize(resp.StatusCode, string(body), dlURL)
 		}
-
-		f, err := os.Create(filepath.Join(outDir, fmt.Sprintf("%s.%s.nupkg", id, version)))
+		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return err
 		}
-		defer f.Close()
-		if _, err := io.Copy(f, resp.Body); err != nil {
-			return err
-		}
-		outFile = f.Name()
+		data = body
 		return nil
 	})
-	return outFile, err
+	return data, err
+}
+
+func (c *Client) Pull(id, version, outDir string) (string, error) {
+	data, err := c.PullBytes(id, version)
+	if err != nil {
+		return "", err
+	}
+	f, err := os.Create(filepath.Join(outDir, fmt.Sprintf("%s.%s.nupkg", id, version)))
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	if _, err := f.Write(data); err != nil {
+		return "", err
+	}
+	return f.Name(), nil
+}
+
+// --- Flat container ---
+
+type FlatContainerVersions struct {
+	Versions []string `json:"versions"`
+}
+
+func (c *Client) FlatContainerVersions(id string) (*FlatContainerVersions, error) {
+	var out FlatContainerVersions
+	err := c.withResource("PackageBaseAddress", c.BaseURL+"/v3/package", func(base string) error {
+		u := fmt.Sprintf("%s/%s/index.json", strings.TrimRight(base, "/"), strings.ToLower(id))
+		return c.get(u, &out)
+	})
+	return &out, err
 }
 
 // --- Delete ---
