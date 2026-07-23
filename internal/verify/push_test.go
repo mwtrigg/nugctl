@@ -1,0 +1,207 @@
+package verify
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/mwtrigg/nugctl/internal/client"
+)
+
+// fakeFeed is a minimal stateful in-memory NuGet v3 feed used to exercise
+// the push round-trip without any real network or server implementation.
+type fakeFeed struct {
+	mu         sync.Mutex
+	packages   map[string][]byte // "id/version" -> nupkg bytes
+	unlisted   map[string]bool
+	hardDelete bool // if true, Delete removes the package entirely
+}
+
+func newFakeFeed(hardDelete bool) *fakeFeed {
+	return &fakeFeed{packages: map[string][]byte{}, unlisted: map[string]bool{}, hardDelete: hardDelete}
+}
+
+func (f *fakeFeed) server() *httptest.Server {
+	mux := http.NewServeMux()
+	var srv *httptest.Server
+
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		base := srv.URL
+		fmt.Fprintf(w, `{"version":"3.0.0","resources":[
+			{"@id":"%s/search","@type":"SearchQueryService/3.4.0"},
+			{"@id":"%s/registration/","@type":"RegistrationsBaseUrl/3.6.0"},
+			{"@id":"%s/flatcontainer/","@type":"PackageBaseAddress/3.0.0"},
+			{"@id":"%s/publish","@type":"PackagePublish/2.0.0"}
+		]}`, base, base, base, base)
+	})
+
+	mux.HandleFunc("/publish", func(w http.ResponseWriter, r *http.Request) {
+		r.ParseMultipartForm(10 << 20)
+		file, header, err := r.FormFile("package")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+		buf := make([]byte, 1<<20)
+		n, _ := file.Read(buf)
+		id, version := parseNupkgFilename(header.Filename)
+		f.mu.Lock()
+		f.packages[id+"/"+version] = buf[:n]
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+	})
+
+	mux.HandleFunc("/search", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("q")
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		var data []map[string]any
+		for key := range f.packages {
+			id := strings.SplitN(key, "/", 2)[0]
+			if f.unlisted[key] {
+				continue
+			}
+			if q == "" || id == q {
+				data = append(data, map[string]any{"id": id, "version": strings.SplitN(key, "/", 2)[1]})
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]any{"totalHits": len(data), "data": data})
+	})
+
+	mux.HandleFunc("/registration/", func(w http.ResponseWriter, r *http.Request) {
+		// /registration/{id}/{version}.json
+		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/registration/"), "/")
+		id := parts[0]
+		version := strings.TrimSuffix(parts[1], ".json")
+		f.mu.Lock()
+		_, ok := f.packages[id+"/"+version]
+		f.mu.Unlock()
+		if !ok {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"catalogEntry": map[string]any{"id": id, "version": version},
+		})
+	})
+
+	mux.HandleFunc("/flatcontainer/", func(w http.ResponseWriter, r *http.Request) {
+		// /flatcontainer/{id}/{version}/{id}.{version}.nupkg
+		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/flatcontainer/"), "/")
+		id, version := parts[0], parts[1]
+		key := id + "/" + version
+		f.mu.Lock()
+		data, ok := f.packages[key]
+		f.mu.Unlock()
+		if !ok {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		w.Write(data)
+	})
+
+	mux.HandleFunc("/publish/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/publish/"), "/")
+		id, version := parts[0], parts[1]
+		key := id + "/" + version
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if f.hardDelete {
+			delete(f.packages, key)
+		} else {
+			f.unlisted[key] = true
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	srv = httptest.NewServer(mux)
+	return srv
+}
+
+// parseNupkgFilename splits "{id}.{version}.nupkg" back into id and version.
+// Test IDs are always "nugctl-verify-<unix-ts>" (no dots), so the first "."
+// that starts a numeric run marks the id/version boundary.
+func parseNupkgFilename(name string) (id, version string) {
+	name = strings.TrimSuffix(name, ".nupkg")
+	for j := 0; j < len(name); j++ {
+		if name[j] == '.' && j+1 < len(name) && name[j+1] >= '0' && name[j+1] <= '9' {
+			return name[:j], name[j+1:]
+		}
+	}
+	return name, ""
+}
+
+func TestRunPush_FullRoundTrip_UnlistOnly(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	feed := newFakeFeed(false) // unlist-only, like BaGetter's default
+	srv := feed.server()
+	defer srv.Close()
+
+	c := client.New(srv.URL, "test-key", false, false, true)
+	r := &Report{}
+	runPush(c, r)
+
+	statuses := map[string]Status{}
+	for _, chk := range r.Checks {
+		statuses[chk.Name] = chk.Status
+	}
+	want := map[string]Status{
+		"build minimal package":                  StatusPass,
+		"push package":                           StatusPass,
+		"package appears in search/registration": StatusPass,
+		"download matches pushed hash":           StatusPass,
+		"unlist/delete package":                  StatusPass,
+		"package disappears from default search": StatusPass,
+		"feed delete support":                    StatusWarn,
+	}
+	for name, wantStatus := range want {
+		if statuses[name] != wantStatus {
+			t.Errorf("check %q = %s, want %s", name, statuses[name], wantStatus)
+		}
+	}
+}
+
+func TestRunPush_FullRoundTrip_HardDelete(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	feed := newFakeFeed(true)
+	srv := feed.server()
+	defer srv.Close()
+
+	c := client.New(srv.URL, "test-key", false, false, true)
+	r := &Report{}
+	runPush(c, r)
+
+	var got Status
+	for _, chk := range r.Checks {
+		if chk.Name == "feed delete support" {
+			got = chk.Status
+		}
+	}
+	if got != StatusPass {
+		t.Errorf("feed delete support = %s, want pass for a hard-delete feed", got)
+	}
+}
+
+func TestPollUntil_TimesOutWithoutHanging(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping ~30s poll-timeout test in -short mode")
+	}
+	start := time.Now()
+	got := pollUntil(func() bool { return false })
+	if got {
+		t.Fatal("expected pollUntil to return false when cond never succeeds")
+	}
+	if time.Since(start) < pollTimeout {
+		t.Fatalf("pollUntil returned before the timeout elapsed: %s", time.Since(start))
+	}
+}
