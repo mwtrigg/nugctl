@@ -37,7 +37,14 @@ func runNegative(c *client.Client, r *Report) {
 		r.Add(Check{Name: "401/403 for garbled credentials", Category: cat, Status: StatusFail, Detail: "expected an auth error, got HTTP 2xx"})
 	case client.IsUnauthorized(delErr):
 		r.Add(Check{Name: "401/403 for garbled credentials", Category: cat, Status: StatusPass})
+	case client.IsNotFound(delErr):
+		// The v3 spec doesn't mandate whether a server checks existence or
+		// auth first. A server that checks existence first will 404 here
+		// with the bad credentials never evaluated — that's not proof the
+		// server accepts bad credentials, just that this probe can't tell.
+		// Treating it as a hard fail would false-fail legitimate servers.
+		r.Add(Check{Name: "401/403 for garbled credentials", Category: cat, Status: StatusWarn, Detail: "got 404 instead of 401/403 — server may check package existence before enforcing auth; this probe can't confirm auth is actually enforced"})
 	default:
-		r.Add(Check{Name: "401/403 for garbled credentials", Category: cat, Status: StatusFail, Detail: "expected 401/403, got a different error (server may leak existence before enforcing auth)", Err: delErr.Error()})
+		r.Add(Check{Name: "401/403 for garbled credentials", Category: cat, Status: StatusFail, Detail: "expected 401/403, got a different error", Err: delErr.Error()})
 	}
 }

@@ -11,7 +11,11 @@ import (
 
 const (
 	pollInterval = 1 * time.Second
-	pollTimeout  = 30 * time.Second
+	// pollTimeout is deliberately well above a plausible index-regen debounce
+	// window on the target feed (e.g. Barn's default 30s quiet period before
+	// regenerating) — setting the oracle's timeout equal to the target's
+	// debounce default would make every push round-trip a coin flip.
+	pollTimeout = 90 * time.Second
 )
 
 func runPush(c *client.Client, r *Report) {

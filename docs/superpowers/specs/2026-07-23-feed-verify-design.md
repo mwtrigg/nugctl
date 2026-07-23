@@ -134,9 +134,12 @@ StatusFail`; else `0`. `warn`/`skip` never affect the exit code.
    a garbage-credentialed push specifically because it has zero
    side-effect risk — there's nothing to delete regardless of how the
    server responds, so even a maximally noncompliant server can't be
-   tricked into accepting content. If the server returns 404 instead of
-   401/403 (i.e. it leaks existence before enforcing auth), that's
-   reported as a `fail` — that's a real, useful conformance signal.
+   tricked into accepting content. `CatUnauthorized` → `pass`. The v3 spec
+   doesn't mandate whether a server checks existence or auth first, so a
+   server that checks existence first will legitimately 404 here with the
+   garbled credentials never evaluated — that's `warn`, not `fail`: the
+   probe is inconclusive, not evidence the server accepts bad credentials.
+   Anything else is `fail`.
 
 ### Push round-trip (only with `--push`)
 
@@ -148,9 +151,13 @@ StatusFail`; else `0`. `warn`/`skip` never affect the exit code.
    which is out of scope here. `id = nugctl-verify-<unix-timestamp>`,
    version `1.0.0`.
 8. `PushBytes` it.
-9. Poll every 1s, up to 30s, until the id appears in both search and
+9. Poll every 1s, up to 90s, until the id appears in both search and
    registration. Timeout → `fail` with elapsed time in `Detail`. These
-   values are hardcoded, not flags — see decisions below.
+   values are hardcoded, not flags — see decisions below. 90s is
+   deliberately well above a plausible index-regen debounce window on the
+   target feed (e.g. a 30s quiet-period default before regeneration) —
+   setting the oracle's timeout equal to the target's own debounce default
+   would make every push round-trip a coin-flip flake.
 10. Download (`PullBytes`) and verify SHA-512 against the pushed bytes.
 11. `Delete()` it (the codebase's single unlist/hard-delete endpoint).
     Poll (same interval/timeout) until absent from default search.
@@ -214,10 +221,14 @@ directly against `internal/verify` — no cobra, no real network anywhere.
   self-hosted v3 servers (BaGetter, Barn) actually parse; would need
   `_rels`/`[Content_Types].xml`/psmdcp to satisfy nuget.org's stricter
   reader, which isn't a goal here.
-- **Polling**: 1s interval, 30s timeout, hardcoded constants — not
+- **Polling**: 1s interval, 90s timeout, hardcoded constants — not
   exposed as flags. Kept the CLI surface to what the spec asked for
   (`--push`, `--package`); can add `--poll-interval`/`--poll-timeout`
-  later if a real feed needs tuning.
+  later if a real feed needs tuning. Originally 30s; raised after review
+  flagged that a 30s oracle timeout equals Barn's own planned 30s index-
+  regen debounce default — a coin-flip flake, not a margin. 90s gives
+  2–3x headroom over that debounce window without the oracle silently
+  encoding assumptions about the target's regen latency.
 - **Registration fields treated as required**: only `catalogEntry.id` and
   `catalogEntry.version` (non-empty). Everything else NuGet v3 lists
   (`authors`, `published`, `tags`, `licenseUrl`, etc.) is optional/
@@ -236,6 +247,28 @@ directly against `internal/verify` — no cobra, no real network anywhere.
   still downloadable after `Delete()`, rather than issuing a second
   "hard delete" call — the codebase only exposes one delete endpoint, so
   a second call would be redundant.
+- **Auth negative-check classification**: `401`/`403` → `pass`, `404` →
+  `warn` (not `fail`), anything else → `fail`. The v3 spec doesn't mandate
+  whether a server checks package existence or auth first; a
+  existence-first server legitimately 404s with the garbled credentials
+  never evaluated. Originally classified 404 as `fail`, which would have
+  false-failed any spec-legal server that happens to order those checks
+  that way — corrected after review.
+
+## Known risk, not addressed by this iteration
+
+The minimal `.nupkg`'s intentional non-OPC-compliance (see above) is fine
+for testing *nugctl's own* round-trip logic, but must not become the de
+facto definition of "a valid package" for Barn's parser once that exists.
+Real client output (`dotnet pack`) is OPC-compliant — `[Content_Types].xml`,
+`_rels`, the works. If Barn's `ParseUpload` is only ever exercised against
+this tool's lenient bare-zip fixture, its acceptance criteria will quietly
+drift looser than the spec, discovered only when a real client's package
+fails against it in production. The fix belongs to Barn's test suite, not
+this tool: harvest a handful of real `dotnet pack` output as golden
+fixtures, test `ParseUpload` against those, and treat this tool's minimal
+nupkg as one deliberately-lenient input case among several — not the only
+one.
 - **Cleanup-failure severity**: reports `warn`, not `fail`, when a feed
   doesn't support hard delete (confirmed acceptable for Barn's dev
   target).
