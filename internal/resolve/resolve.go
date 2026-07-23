@@ -59,7 +59,15 @@ func ClientFromConfig(cfg *config.Config, ov Overrides) (*client.Client, error) 
 	}
 	prof, err := cfg.ActiveProfile(profileName)
 	if err != nil {
-		return nil, err
+		// No profile was requested by name and none is configured, but a URL
+		// was supplied directly (flag or env) — that's enough to build a
+		// client without any config file at all, e.g. for CI. An explicitly
+		// named profile that doesn't exist (profileName != "") still errors,
+		// since that's almost certainly a typo the user should hear about.
+		if profileName != "" || (ov.URL == "" && os.Getenv(EnvURL) == "") {
+			return nil, err
+		}
+		prof = &config.Profile{Name: "(none)"}
 	}
 
 	u := prof.URL
