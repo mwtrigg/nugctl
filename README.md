@@ -78,6 +78,10 @@ nugctl feed info --url https://feed.internal/v3/index.json --insecure
 NUGCTL_URL=https://feed.internal/v3/index.json NUGCTL_INSECURE=true nugctl feed info
 ```
 
+No profile or config file is required at all as long as `--url`/`NUGCTL_URL` supplies
+the feed URL — useful for CI environments with no `~/.config/nugctl`. `--profile`/`-p`
+naming a profile that doesn't exist is still an error, so a typo doesn't fail silently.
+
 `--insecure` skips TLS certificate verification (equivalent to `curl -k`) — use it for
 self-signed or internally-issued certs, not for feeds you don't trust.
 
