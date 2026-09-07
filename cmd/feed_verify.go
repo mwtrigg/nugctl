@@ -23,6 +23,11 @@ index was unreachable).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		push, _ := cmd.Flags().GetBool("push")
 		pkg, _ := cmd.Flags().GetString("package")
+		forceDelete, _ := cmd.Flags().GetBool("force-delete")
+
+		if forceDelete && !push {
+			return fmt.Errorf("--force-delete requires --push")
+		}
 
 		c, err := resolveClient()
 		if err != nil {
@@ -30,7 +35,7 @@ index was unreachable).`,
 			os.Exit(2)
 		}
 
-		report := verify.Run(c, verify.Options{Push: push, Package: pkg})
+		report := verify.Run(c, verify.Options{Push: push, Package: pkg, ForceDelete: forceDelete})
 		printVerifyReport(report)
 		os.Exit(report.ExitCode())
 		return nil
@@ -72,5 +77,6 @@ func printVerifyReport(r *verify.Report) {
 func init() {
 	feedVerifyCmd.Flags().Bool("push", false, "also run round-trip checks (push, poll, download, unlist) against a writable feed")
 	feedVerifyCmd.Flags().String("package", "", "package ID to use for integrity checks (default: first hit of an unfiltered search)")
+	feedVerifyCmd.Flags().Bool("force-delete", false, "append force=true to the round-trip's cleanup delete, for feeds (e.g. Barn) that reject deleting a recently-downloaded package with 409 otherwise; feed-specific extension, requires --push")
 	feedCmd.AddCommand(feedVerifyCmd)
 }

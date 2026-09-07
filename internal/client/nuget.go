@@ -425,8 +425,26 @@ func (c *Client) FlatContainerVersions(id string) (*FlatContainerVersions, error
 // --- Delete ---
 
 func (c *Client) Delete(id, version string) error {
+	return c.DeleteWithOptions(id, version, DeleteOptions{})
+}
+
+// DeleteOptions controls feed-specific delete behavior. Force is a
+// nugctl-specific extension for feeds (e.g. Barn) that reject deletion of a
+// recently-downloaded package with HTTP 409 unless the request explicitly
+// opts into forced deletion; it is not part of the NuGet v3 protocol and
+// ordinary feeds ignore it.
+type DeleteOptions struct {
+	Force bool
+}
+
+// DeleteWithOptions deletes id/version, appending "force=true" to the
+// request only when opts.Force is set.
+func (c *Client) DeleteWithOptions(id, version string, opts DeleteOptions) error {
 	return c.withResource("PackagePublish", c.BaseURL+"/api/v2/package", func(base string) error {
 		delURL := fmt.Sprintf("%s/%s/%s", strings.TrimRight(base, "/"), id, version)
+		if opts.Force {
+			delURL += "?force=true"
+		}
 		_, err := c.doRequest(http.MethodDelete, delURL, nil, "")
 		return err
 	})
