@@ -16,14 +16,18 @@ import (
 // fakeFeed is a minimal stateful in-memory NuGet v3 feed used to exercise
 // the push round-trip without any real network or server implementation.
 type fakeFeed struct {
-	mu         sync.Mutex
-	packages   map[string][]byte // "id/version" -> nupkg bytes
-	unlisted   map[string]bool
-	hardDelete bool // if true, Delete removes the package entirely
+	mu               sync.Mutex
+	packages         map[string][]byte // "id/version" -> nupkg bytes
+	unlisted         map[string]bool
+	hardDelete       bool // if true, Delete removes the package entirely
+	guardRecentDL    bool // if true, mimic Barn: reject deleting a just-downloaded package unless force=true
+	rejectAllDeletes bool // if true, every DELETE fails with 409 regardless of force
+	downloaded       map[string]bool
+	deleteQueries    []string // raw query string of every DELETE request received, in order
 }
 
 func newFakeFeed(hardDelete bool) *fakeFeed {
-	return &fakeFeed{packages: map[string][]byte{}, unlisted: map[string]bool{}, hardDelete: hardDelete}
+	return &fakeFeed{packages: map[string][]byte{}, unlisted: map[string]bool{}, downloaded: map[string]bool{}, hardDelete: hardDelete}
 }
 
 func (f *fakeFeed) server() *httptest.Server {
@@ -98,6 +102,9 @@ func (f *fakeFeed) server() *httptest.Server {
 		key := id + "/" + version
 		f.mu.Lock()
 		data, ok := f.packages[key]
+		if ok {
+			f.downloaded[key] = true
+		}
 		f.mu.Unlock()
 		if !ok {
 			http.Error(w, "not found", http.StatusNotFound)
@@ -116,6 +123,19 @@ func (f *fakeFeed) server() *httptest.Server {
 		key := id + "/" + version
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		f.deleteQueries = append(f.deleteQueries, r.URL.RawQuery)
+		if f.rejectAllDeletes {
+			w.Header().Set("Content-Type", "application/problem+json")
+			w.WriteHeader(http.StatusConflict)
+			fmt.Fprint(w, `{"type":"https://example.com/probs/recent-download","title":"package was recently downloaded","status":409}`)
+			return
+		}
+		if f.guardRecentDL && f.downloaded[key] && r.URL.Query().Get("force") != "true" {
+			w.Header().Set("Content-Type", "application/problem+json")
+			w.WriteHeader(http.StatusConflict)
+			fmt.Fprint(w, `{"type":"https://example.com/probs/recent-download","title":"package was recently downloaded","status":409}`)
+			return
+		}
 		if f.hardDelete {
 			delete(f.packages, key)
 		} else {
@@ -149,7 +169,7 @@ func TestRunPush_FullRoundTrip_UnlistOnly(t *testing.T) {
 
 	c := client.New(srv.URL, "test-key", false, false, true)
 	r := &Report{}
-	runPush(c, r)
+	runPush(c, Options{Push: true}, r)
 
 	statuses := map[string]Status{}
 	for _, chk := range r.Checks {
@@ -179,7 +199,7 @@ func TestRunPush_FullRoundTrip_HardDelete(t *testing.T) {
 
 	c := client.New(srv.URL, "test-key", false, false, true)
 	r := &Report{}
-	runPush(c, r)
+	runPush(c, Options{Push: true}, r)
 
 	var got Status
 	for _, chk := range r.Checks {
@@ -189,6 +209,123 @@ func TestRunPush_FullRoundTrip_HardDelete(t *testing.T) {
 	}
 	if got != StatusPass {
 		t.Errorf("feed delete support = %s, want pass for a hard-delete feed", got)
+	}
+}
+
+// TestRunPush_DefaultMode_RecentDownloadGuard_FailsCleanupNoRetry verifies
+// that against a feed like Barn (409 on deleting a just-downloaded package
+// unless forced), the default --push mode sends no force=true and does not
+// retry: the cleanup check simply fails.
+func TestRunPush_DefaultMode_RecentDownloadGuard_FailsCleanupNoRetry(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	feed := newFakeFeed(false)
+	feed.guardRecentDL = true
+	srv := feed.server()
+	defer srv.Close()
+
+	c := client.New(srv.URL, "test-key", false, false, true)
+	r := &Report{}
+	runPush(c, Options{Push: true}, r)
+
+	var got Status
+	for _, chk := range r.Checks {
+		if chk.Name == "unlist/delete package" {
+			got = chk.Status
+		}
+	}
+	if got != StatusFail {
+		t.Errorf("unlist/delete package = %s, want fail (409 with no force)", got)
+	}
+
+	feed.mu.Lock()
+	defer feed.mu.Unlock()
+	if len(feed.deleteQueries) != 1 {
+		t.Fatalf("expected exactly one DELETE attempt (no retry), got %d: %v", len(feed.deleteQueries), feed.deleteQueries)
+	}
+	if strings.Contains(feed.deleteQueries[0], "force=true") {
+		t.Errorf("default mode must not send force=true, got query %q", feed.deleteQueries[0])
+	}
+}
+
+// TestRunPush_ForceDelete_SendsForceTrue verifies --force-delete appends
+// force=true and the round-trip's remaining checks still run normally.
+func TestRunPush_ForceDelete_SendsForceTrue(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	feed := newFakeFeed(false)
+	feed.guardRecentDL = true
+	srv := feed.server()
+	defer srv.Close()
+
+	c := client.New(srv.URL, "test-key", false, false, true)
+	r := &Report{}
+	runPush(c, Options{Push: true, ForceDelete: true}, r)
+
+	statuses := map[string]Status{}
+	for _, chk := range r.Checks {
+		statuses[chk.Name] = chk.Status
+	}
+	want := map[string]Status{
+		"unlist/delete package":                  StatusPass,
+		"package disappears from default search": StatusPass,
+	}
+	for name, wantStatus := range want {
+		if statuses[name] != wantStatus {
+			t.Errorf("check %q = %s, want %s", name, statuses[name], wantStatus)
+		}
+	}
+
+	feed.mu.Lock()
+	defer feed.mu.Unlock()
+	if len(feed.deleteQueries) != 1 || !strings.Contains(feed.deleteQueries[0], "force=true") {
+		t.Errorf("expected exactly one DELETE with force=true, got %v", feed.deleteQueries)
+	}
+}
+
+// TestRunPush_ForceDelete_FailureStaysVisible verifies a forced delete that
+// still fails is reported as a failed check, not silently swallowed.
+func TestRunPush_ForceDelete_FailureStaysVisible(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	feed := newFakeFeed(false)
+	feed.rejectAllDeletes = true
+	srv := feed.server()
+	defer srv.Close()
+
+	c := client.New(srv.URL, "test-key", false, false, true)
+	r := &Report{}
+	runPush(c, Options{Push: true, ForceDelete: true}, r)
+
+	var got Status
+	for _, chk := range r.Checks {
+		if chk.Name == "unlist/delete package" {
+			got = chk.Status
+		}
+	}
+	if got != StatusFail {
+		t.Errorf("unlist/delete package = %s, want fail even when forced", got)
+	}
+}
+
+// TestRunPush_NormalFeedUnaffectedByForceDelete verifies --force-delete is a
+// no-op against a feed with no recent-download guard: the delete succeeds
+// and the round trip completes as usual.
+func TestRunPush_NormalFeedUnaffectedByForceDelete(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	feed := newFakeFeed(false)
+	srv := feed.server()
+	defer srv.Close()
+
+	c := client.New(srv.URL, "test-key", false, false, true)
+	r := &Report{}
+	runPush(c, Options{Push: true, ForceDelete: true}, r)
+
+	var got Status
+	for _, chk := range r.Checks {
+		if chk.Name == "unlist/delete package" {
+			got = chk.Status
+		}
+	}
+	if got != StatusPass {
+		t.Errorf("unlist/delete package = %s, want pass on a normal feed", got)
 	}
 }
 

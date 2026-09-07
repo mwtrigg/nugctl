@@ -18,7 +18,7 @@ const (
 	pollTimeout = 90 * time.Second
 )
 
-func runPush(c *client.Client, r *Report) {
+func runPush(c *client.Client, opts Options, r *Report) {
 	const cat = "push"
 	id := fmt.Sprintf("nugctl-verify-%d", time.Now().Unix())
 	version := "1.0.0"
@@ -55,7 +55,7 @@ func runPush(c *client.Client, r *Report) {
 		}
 	}
 
-	if err := c.Delete(id, version); err != nil {
+	if err := c.DeleteWithOptions(id, version, client.DeleteOptions{Force: opts.ForceDelete}); err != nil {
 		r.Add(Check{Name: "unlist/delete package", Category: cat, Status: StatusFail, Err: err.Error()})
 		return
 	}

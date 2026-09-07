@@ -69,8 +69,9 @@ func (r *Report) Counts() (pass, fail, warn, skip int) {
 
 // Options controls which checks Run executes.
 type Options struct {
-	Push    bool   // also run the push round-trip
-	Package string // target package for integrity checks; "" = auto-discover
+	Push        bool   // also run the push round-trip
+	Package     string // target package for integrity checks; "" = auto-discover
+	ForceDelete bool   // append force=true to the push round-trip's cleanup delete; only valid with Push
 }
 
 // Run executes all applicable checks against c and returns the full report.
@@ -84,7 +85,7 @@ func Run(c *client.Client, opts Options) *Report {
 	}
 	runNegative(c, r)
 	if opts.Push {
-		runPush(c, r)
+		runPush(c, opts, r)
 	}
 	return r
 }
