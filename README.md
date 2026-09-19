@@ -121,6 +121,8 @@ to remove it entirely.
 | `nugctl profile use <name>` | Set the active profile |
 | `nugctl profile delete <name>` | Delete a profile |
 | `nugctl feed info` | Show the feed's service index and capabilities |
+| `nugctl feed verify` | Validate a feed's NuGet v3 protocol conformance |
+| `nugctl feed deps` | Check whether packages' declared dependencies resolve in the feed |
 | `nugctl package search <query>` | Search for packages |
 | `nugctl package list --id <id>` | List all versions of a package |
 | `nugctl package info <id>` | Show package metadata |
