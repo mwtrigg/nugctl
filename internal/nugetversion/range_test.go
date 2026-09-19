@@ -32,6 +32,9 @@ func TestParseRange_Bounds(t *testing.T) {
 		{name: "exclusive range", in: "(1.0.0,2.0.0)", wantMin: "1.0.0", wantMinIncl: false, wantMax: "2.0.0", wantMaxIncl: false},
 		{name: "mixed range", in: "[1.0.0,2.0.0)", wantMin: "1.0.0", wantMinIncl: true, wantMax: "2.0.0", wantMaxIncl: false},
 		{name: "empty means any version", in: "", wantMinIsNil: true, wantMaxIsNil: true},
+		{name: "both bounds empty, exclusive form, means any version", in: "(,)", wantMinIsNil: true, wantMaxIsNil: true},
+		{name: "both bounds empty, inclusive form, means any version", in: "[,]", wantMinIsNil: true, wantMaxIsNil: true},
+		{name: "both bounds empty with whitespace means any version", in: "( , )", wantMinIsNil: true, wantMaxIsNil: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -64,7 +67,6 @@ func TestParseRange_Invalid(t *testing.T) {
 		"[1.0.0",
 		"1.0.0]",
 		"(1.0.0)", // exact match must use [ ]
-		"[,]",
 		"[abc,2.0.0]",
 	}
 	for _, in := range cases {
@@ -98,6 +100,8 @@ func TestRange_Satisfies(t *testing.T) {
 		{"mixed range, lower included", "[1.0.0,2.0.0)", "1.0.0", true},
 		{"mixed range, upper excluded", "[1.0.0,2.0.0)", "2.0.0", false},
 		{"empty range accepts anything", "", "0.0.1", true},
+		{"both-bounds-empty paren form accepts anything", "(,)", "0.0.1", true},
+		{"both-bounds-empty bracket form accepts anything", "[,]", "0.0.1", true},
 		{"prerelease below release minimum", "1.0.0", "1.0.0-beta", false},
 	}
 	for _, tc := range cases {
