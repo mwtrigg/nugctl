@@ -80,6 +80,16 @@ func ParseRange(s string) (*Range, error) {
 	return r, nil
 }
 
+// AllowsPrerelease reports whether r's bounds themselves reference a
+// prerelease version. NuGet only considers a prerelease candidate for a
+// dependency range when the range explicitly opts into prerelease this way
+// (e.g. "[1.0.0-beta,2.0.0)") — a plain stable range like "[1.0,2.0)" must
+// not be satisfied by a prerelease version such as 1.2.0-beta.
+func (r *Range) AllowsPrerelease() bool {
+	return (r.MinVersion != nil && r.MinVersion.Prerelease != "") ||
+		(r.MaxVersion != nil && r.MaxVersion.Prerelease != "")
+}
+
 // Satisfies reports whether v falls within r.
 func (r *Range) Satisfies(v Version) bool {
 	if r.MinVersion != nil {

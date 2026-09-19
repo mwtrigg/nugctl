@@ -232,9 +232,20 @@ type RegistrationIndex struct {
 	Items []RegistrationPage `json:"items"`
 }
 
+// RegistrationPage is one page of a registration index. A feed may inline a
+// page's leaves (Items populated) or, per the NuGet v3 registration schema,
+// leave a large page out-of-line: only ID and Count are present and the
+// leaves must be fetched separately from ID. See RegistrationPageAt.
 type RegistrationPage struct {
+	ID    string             `json:"@id"`
 	Count int                `json:"count"`
 	Items []RegistrationLeaf `json:"items"`
+}
+
+// Inline reports whether the page's leaves were included directly, as
+// opposed to needing a separate fetch via RegistrationPageAt(page.ID).
+func (p RegistrationPage) Inline() bool {
+	return len(p.Items) > 0 || p.Count == 0
 }
 
 type RegistrationLeaf struct {
@@ -321,6 +332,15 @@ func (c *Client) RegistrationVersion(id, version string) (*CatalogEntry, error) 
 		return c.get(regURL, &leaf)
 	})
 	return &leaf.CatalogEntry, err
+}
+
+// RegistrationPageAt fetches a registration page document by its own
+// absolute URL (a RegistrationPage.ID), for pages a feed left out-of-line
+// rather than inlining into the registration index.
+func (c *Client) RegistrationPageAt(pageURL string) (*RegistrationPage, error) {
+	var page RegistrationPage
+	err := c.get(pageURL, &page)
+	return &page, err
 }
 
 // --- Push ---
