@@ -260,22 +260,49 @@ func (t *Tags) UnmarshalJSON(data []byte) error {
 }
 
 type CatalogEntry struct {
-	ID                       string `json:"id"`
-	Version                  string `json:"version"`
-	Description              string `json:"description"`
-	Authors                  string `json:"authors"`
-	Tags                     Tags   `json:"tags"`
-	Published                string `json:"published"`
-	ProjectURL               string `json:"projectUrl,omitempty"`
-	LicenseURL               string `json:"licenseUrl,omitempty"`
-	RequireLicenseAcceptance bool   `json:"requireLicenseAcceptance,omitempty"`
-	Summary                  string `json:"summary,omitempty"`
-	Title                    string `json:"title,omitempty"`
-	PackageHash              string `json:"packageHash,omitempty"`
-	PackageHashAlgorithm     string `json:"packageHashAlgorithm,omitempty"`
-	PackageSize              int    `json:"packageSize,omitempty"`
-	IsPrerelease             bool   `json:"isPrerelease"`
-	Listed                   bool   `json:"listed"`
+	ID                       string            `json:"id"`
+	Version                  string            `json:"version"`
+	Description              string            `json:"description"`
+	Authors                  string            `json:"authors"`
+	Tags                     Tags              `json:"tags"`
+	Published                string            `json:"published"`
+	ProjectURL               string            `json:"projectUrl,omitempty"`
+	LicenseURL               string            `json:"licenseUrl,omitempty"`
+	RequireLicenseAcceptance bool              `json:"requireLicenseAcceptance,omitempty"`
+	Summary                  string            `json:"summary,omitempty"`
+	Title                    string            `json:"title,omitempty"`
+	PackageHash              string            `json:"packageHash,omitempty"`
+	PackageHashAlgorithm     string            `json:"packageHashAlgorithm,omitempty"`
+	PackageSize              int               `json:"packageSize,omitempty"`
+	IsPrerelease             bool              `json:"isPrerelease"`
+	Listed                   bool              `json:"listed"`
+	DependencyGroups         []DependencyGroup `json:"dependencyGroups,omitempty"`
+}
+
+// UnmarshalJSON applies the NuGet v3 registration schema's documented
+// default: a missing "listed" property means the version is listed. Without
+// this, Go's zero value would silently treat an absent property the same as
+// an explicit "listed": false.
+func (e *CatalogEntry) UnmarshalJSON(data []byte) error {
+	type alias CatalogEntry
+	aux := &struct{ *alias }{alias: (*alias)(e)}
+	e.Listed = true
+	return json.Unmarshal(data, aux)
+}
+
+// DependencyGroup is one <group targetFramework="..."> entry in a NuGet v3
+// catalog entry's dependencyGroups. TargetFramework is empty for a
+// framework-agnostic group.
+type DependencyGroup struct {
+	TargetFramework string       `json:"targetFramework,omitempty"`
+	Dependencies    []Dependency `json:"dependencies,omitempty"`
+}
+
+// Dependency is one dependency within a DependencyGroup: a package ID and
+// its NuGet version range (https://learn.microsoft.com/nuget/concepts/package-versioning#version-ranges).
+type Dependency struct {
+	ID    string `json:"id"`
+	Range string `json:"range,omitempty"`
 }
 
 func (c *Client) Registration(id string) (*RegistrationIndex, error) {
