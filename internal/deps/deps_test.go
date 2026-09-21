@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/mwtrigg/nugctl/internal/client"
 )
@@ -36,17 +38,42 @@ type dep struct {
 type regFeedConfig struct {
 	packages   []pkg
 	outOfLine  map[string]bool // id (lowercased) -> serve its registration index with the page left out-of-line
-	failStatus map[string]int  // id (lowercased) -> HTTP status the registration endpoint returns instead of content
+	failStatus map[string]int  // id (lowercased) -> HTTP status the registration endpoint returns instead of content, every time
+
+	// flakyStatus/flakyFailCount simulate a feed's rate limiter: for id
+	// (lowercased), the registration endpoint returns flakyStatus[id] for
+	// the first flakyFailCount[id] requests, then serves normally.
+	flakyStatus    map[string]int
+	flakyFailCount map[string]int
+	retryAfter     map[string]string // id (lowercased) -> Retry-After header sent alongside a flaky failure
+}
+
+// feedProbe records what fakeRegFeedWithConfig's server actually received,
+// for tests asserting on pacing and retry counts.
+type feedProbe struct {
+	mu             sync.Mutex
+	attempts       map[string]int // id (lowercased) -> number of /registration/ requests received so far
+	registrationAt []time.Time    // request time of every /registration/ call, in order
+}
+
+func (p *feedProbe) record(id string) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.attempts[id]++
+	p.registrationAt = append(p.registrationAt, time.Now())
+	return p.attempts[id]
 }
 
 // fakeRegFeed serves only the two v3 resources deps.Run needs: search (for
 // full-feed discovery) and registration (for dependencyGroups).
 func fakeRegFeed(t *testing.T, packages []pkg) *httptest.Server {
-	return fakeRegFeedWithConfig(t, regFeedConfig{packages: packages})
+	srv, _ := fakeRegFeedWithConfig(t, regFeedConfig{packages: packages})
+	return srv
 }
 
-func fakeRegFeedWithConfig(t *testing.T, cfg regFeedConfig) *httptest.Server {
+func fakeRegFeedWithConfig(t *testing.T, cfg regFeedConfig) (*httptest.Server, *feedProbe) {
 	t.Helper()
+	probe := &feedProbe{attempts: map[string]int{}}
 	byID := map[string][]pkg{}
 	var order []string
 	for _, p := range cfg.packages {
@@ -109,6 +136,14 @@ func fakeRegFeedWithConfig(t *testing.T, cfg regFeedConfig) *httptest.Server {
 	mux.HandleFunc("/registration/", func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/registration/"), "/index.json")
 		key := strings.ToLower(id)
+		attempt := probe.record(key)
+		if n, ok := cfg.flakyFailCount[key]; ok && attempt <= n {
+			if ra, ok := cfg.retryAfter[key]; ok {
+				w.Header().Set("Retry-After", ra)
+			}
+			http.Error(w, "simulated transient failure", cfg.flakyStatus[key])
+			return
+		}
 		if status, ok := cfg.failStatus[key]; ok {
 			http.Error(w, "simulated failure", status)
 			return
@@ -133,7 +168,7 @@ func fakeRegFeedWithConfig(t *testing.T, cfg regFeedConfig) *httptest.Server {
 	})
 
 	srv = httptest.NewServer(mux)
-	return srv
+	return srv, probe
 }
 
 func TestRun_ClassifiesOKMissingUnsatisfied(t *testing.T) {
@@ -311,7 +346,7 @@ func TestRun_OutOfLineRegistrationPage_StillScanned(t *testing.T) {
 	packages := []pkg{
 		{id: "App", version: "1.0.0", deps: []depGroup{{deps: []dep{{id: "Missing.Lib", rng: "1.0.0"}}}}},
 	}
-	srv := fakeRegFeedWithConfig(t, regFeedConfig{
+	srv, _ := fakeRegFeedWithConfig(t, regFeedConfig{
 		packages:  packages,
 		outOfLine: map[string]bool{"app": true},
 	})
@@ -374,7 +409,7 @@ func TestRun_DependencyRegistrationError_AbortsInsteadOfMissing(t *testing.T) {
 	packages := []pkg{
 		{id: "App", version: "1.0.0", deps: []depGroup{{deps: []dep{{id: "Flaky", rng: "1.0.0"}}}}},
 	}
-	srv := fakeRegFeedWithConfig(t, regFeedConfig{
+	srv, _ := fakeRegFeedWithConfig(t, regFeedConfig{
 		packages:   packages,
 		failStatus: map[string]int{"flaky": http.StatusInternalServerError},
 	})
@@ -388,5 +423,158 @@ func TestRun_DependencyRegistrationError_AbortsInsteadOfMissing(t *testing.T) {
 	}
 	if r.ExitCode() != 2 {
 		t.Errorf("ExitCode() = %d, want 2", r.ExitCode())
+	}
+}
+
+// TestRun_MaxRPS_PacesRequests verifies Options.MaxRPS actually throttles
+// the scan: fetching four packages' registrations at 10 req/s should take
+// meaningfully longer than doing so unthrottled.
+func TestRun_MaxRPS_PacesRequests(t *testing.T) {
+	packages := []pkg{
+		{id: "App", version: "1.0.0", deps: []depGroup{{deps: []dep{
+			{id: "LibA", rng: "1.0.0"},
+			{id: "LibB", rng: "1.0.0"},
+			{id: "LibC", rng: "1.0.0"},
+		}}}},
+		{id: "LibA", version: "1.0.0"},
+		{id: "LibB", version: "1.0.0"},
+		{id: "LibC", version: "1.0.0"},
+	}
+	srv, _ := fakeRegFeedWithConfig(t, regFeedConfig{packages: packages})
+	defer srv.Close()
+
+	c := client.New(srv.URL, "", false, false, true)
+	const rps = 10.0 // 100ms between requests
+	start := time.Now()
+	r := Run(c, Options{MaxRPS: rps})
+	elapsed := time.Since(start)
+
+	if r.Aborted {
+		t.Fatalf("unexpected abort: %s", r.AbortReason)
+	}
+	// 4 registration fetches (App, LibA, LibB, LibC) paced 100ms apart
+	// means at least ~300ms of enforced spacing between them.
+	if want := 300 * time.Millisecond; elapsed < want {
+		t.Errorf("elapsed = %v, want at least %v with MaxRPS=%v", elapsed, want, rps)
+	}
+}
+
+// TestRun_MaxRPS_Zero_IsUnthrottled verifies the default (MaxRPS: 0)
+// preserves the pre-existing unthrottled behavior.
+func TestRun_MaxRPS_Zero_IsUnthrottled(t *testing.T) {
+	packages := []pkg{
+		{id: "App", version: "1.0.0", deps: []depGroup{{deps: []dep{
+			{id: "LibA", rng: "1.0.0"},
+			{id: "LibB", rng: "1.0.0"},
+		}}}},
+		{id: "LibA", version: "1.0.0"},
+		{id: "LibB", version: "1.0.0"},
+	}
+	srv, _ := fakeRegFeedWithConfig(t, regFeedConfig{packages: packages})
+	defer srv.Close()
+
+	c := client.New(srv.URL, "", false, false, true)
+	start := time.Now()
+	r := Run(c, Options{})
+	elapsed := time.Since(start)
+
+	if r.Aborted {
+		t.Fatalf("unexpected abort: %s", r.AbortReason)
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Errorf("elapsed = %v, want well under 250ms unthrottled", elapsed)
+	}
+}
+
+// TestRun_RetriesOn503ThenSucceeds verifies a transient 503 (e.g. from a
+// feed's own rate limiter) is retried rather than aborting the whole scan.
+func TestRun_RetriesOn503ThenSucceeds(t *testing.T) {
+	packages := []pkg{
+		{id: "App", version: "1.0.0", deps: []depGroup{{deps: []dep{{id: "Flaky", rng: "1.0.0"}}}}},
+		{id: "Flaky", version: "1.0.0"},
+	}
+	srv, probe := fakeRegFeedWithConfig(t, regFeedConfig{
+		packages:       packages,
+		flakyStatus:    map[string]int{"flaky": http.StatusServiceUnavailable},
+		flakyFailCount: map[string]int{"flaky": 1}, // fails once, succeeds on the retry
+	})
+	defer srv.Close()
+
+	c := client.New(srv.URL, "", false, false, true)
+	r := Run(c, Options{Package: "App"})
+
+	if r.Aborted {
+		t.Fatalf("unexpected abort: %s", r.AbortReason)
+	}
+	if len(r.Findings) != 1 || r.Findings[0].Status != StatusOK {
+		t.Fatalf("Findings = %+v, want ok after the transient 503 was retried", r.Findings)
+	}
+
+	probe.mu.Lock()
+	defer probe.mu.Unlock()
+	if probe.attempts["flaky"] != 2 {
+		t.Errorf("attempts for flaky = %d, want 2 (1 failure + 1 successful retry)", probe.attempts["flaky"])
+	}
+}
+
+// TestRun_HonorsRetryAfterHeader verifies a 429's Retry-After header
+// overrides the default exponential backoff.
+func TestRun_HonorsRetryAfterHeader(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping ~1s Retry-After test in -short mode")
+	}
+	packages := []pkg{
+		{id: "App", version: "1.0.0", deps: []depGroup{{deps: []dep{{id: "Flaky", rng: "1.0.0"}}}}},
+		{id: "Flaky", version: "1.0.0"},
+	}
+	srv, _ := fakeRegFeedWithConfig(t, regFeedConfig{
+		packages:       packages,
+		flakyStatus:    map[string]int{"flaky": http.StatusTooManyRequests},
+		flakyFailCount: map[string]int{"flaky": 1},
+		retryAfter:     map[string]string{"flaky": "1"},
+	})
+	defer srv.Close()
+
+	c := client.New(srv.URL, "", false, false, true)
+	start := time.Now()
+	r := Run(c, Options{Package: "App"})
+	elapsed := time.Since(start)
+
+	if r.Aborted {
+		t.Fatalf("unexpected abort: %s", r.AbortReason)
+	}
+	if elapsed < 900*time.Millisecond {
+		t.Errorf("elapsed = %v, want at least ~1s honoring the feed's Retry-After instead of the shorter default backoff", elapsed)
+	}
+}
+
+// TestRun_GivesUpAfterMaxRetries verifies a persistently failing 503
+// eventually aborts rather than retrying forever.
+func TestRun_GivesUpAfterMaxRetries(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping several-second max-retries backoff test in -short mode")
+	}
+	packages := []pkg{
+		{id: "App", version: "1.0.0", deps: []depGroup{{deps: []dep{{id: "AlwaysFlaky", rng: "1.0.0"}}}}},
+		{id: "AlwaysFlaky", version: "1.0.0"},
+	}
+	srv, probe := fakeRegFeedWithConfig(t, regFeedConfig{
+		packages:       packages,
+		flakyStatus:    map[string]int{"alwaysflaky": http.StatusServiceUnavailable},
+		flakyFailCount: map[string]int{"alwaysflaky": 1000}, // never recovers
+	})
+	defer srv.Close()
+
+	c := client.New(srv.URL, "", false, false, true)
+	r := Run(c, Options{Package: "App"})
+
+	if !r.Aborted {
+		t.Fatalf("expected Aborted after exhausting retries on a persistent 503, got Findings=%+v", r.Findings)
+	}
+
+	probe.mu.Lock()
+	defer probe.mu.Unlock()
+	if want := maxRetries + 1; probe.attempts["alwaysflaky"] != want {
+		t.Errorf("attempts = %d, want %d (1 initial + %d retries)", probe.attempts["alwaysflaky"], want, maxRetries)
 	}
 }

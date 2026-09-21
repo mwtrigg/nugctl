@@ -74,9 +74,9 @@ func ParseRange(s string) (*Range, error) {
 		r.MaxVersion = &v
 		r.MaxInclusive = maxInclusive
 	}
-	if r.MinVersion == nil && r.MaxVersion == nil {
-		return nil, fmt.Errorf("invalid version range %q: no bounds given", s)
-	}
+	// Both bounds empty (e.g. "(,)") means unbounded on both sides — the
+	// bracket/paren form's equivalent of "", i.e. any version. NuGet
+	// permits this even though it's a degenerate way to write it.
 	return r, nil
 }
 
