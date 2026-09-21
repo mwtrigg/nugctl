@@ -129,7 +129,7 @@ func (c *Client) RefreshServiceIndex() (*ServiceIndex, error) {
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, categorize(resp.StatusCode, string(body), c.BaseURL)
+		return nil, categorizeResp(resp, string(body), c.BaseURL)
 	}
 
 	var idx ServiceIndex
@@ -378,7 +378,7 @@ func (c *Client) PushBytes(filename string, data []byte) error {
 		defer resp.Body.Close()
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			body, _ := io.ReadAll(resp.Body)
-			return categorize(resp.StatusCode, string(body), base)
+			return categorizeResp(resp, string(body), base)
 		}
 		return nil
 	})
@@ -426,7 +426,7 @@ func (c *Client) PullBytes(id, version string) ([]byte, error) {
 		defer resp.Body.Close()
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			body, _ := io.ReadAll(resp.Body)
-			return categorize(resp.StatusCode, string(body), dlURL)
+			return categorizeResp(resp, string(body), dlURL)
 		}
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
@@ -537,7 +537,7 @@ func (c *Client) Deprecate(id, version string, req DeprecationRequest) error {
 		case http.StatusOK, http.StatusNoContent, http.StatusCreated:
 			return nil
 		default:
-			return categorize(resp.StatusCode, string(respBody), depURL)
+			return categorizeResp(resp, string(respBody), depURL)
 		}
 	})
 }
@@ -566,7 +566,7 @@ func (c *Client) get(rawURL string, out interface{}) error {
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
-		return categorize(resp.StatusCode, string(body), rawURL)
+		return categorizeResp(resp, string(body), rawURL)
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }
@@ -596,7 +596,7 @@ func (c *Client) doRequest(method, rawURL string, body []byte, contentType strin
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, categorize(resp.StatusCode, string(respBody), rawURL)
+		return nil, categorizeResp(resp, string(respBody), rawURL)
 	}
 	return respBody, nil
 }

@@ -17,12 +17,20 @@ dependency (id + version range) against what the feed actually has listed.
 Designed to run in CI: exit 0 means every dependency resolved, exit 1 means
 at least one is missing or unsatisfied, exit 2 means the scan couldn't even
 run (e.g. the service index was unreachable, or --package names a package
-the feed doesn't have).`,
+the feed doesn't have).
+
+A 429 or 503 response is retried a few times with backoff (honoring the
+feed's Retry-After header, if it sends one) before giving up. Use --max-rps
+to cap the request rate up front for a feed sitting behind a rate limiter
+(e.g. nginx limit_req) that would otherwise start rejecting requests
+partway through a scan.`,
 	Example: `  nugctl feed deps
   nugctl feed deps --package Newtonsoft.Json
-  nugctl feed deps -o json`,
+  nugctl feed deps -o json
+  nugctl feed deps --max-rps 5`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pkg, _ := cmd.Flags().GetString("package")
+		maxRPS, _ := cmd.Flags().GetFloat64("max-rps")
 
 		c, err := resolveClient()
 		if err != nil {
@@ -30,7 +38,7 @@ the feed doesn't have).`,
 			os.Exit(2)
 		}
 
-		report := deps.Run(c, deps.Options{Package: pkg})
+		report := deps.Run(c, deps.Options{Package: pkg, MaxRPS: maxRPS})
 		printDepsReport(report)
 		os.Exit(report.ExitCode())
 		return nil
@@ -64,5 +72,6 @@ func printDepsReport(r *deps.Report) {
 
 func init() {
 	feedDepsCmd.Flags().String("package", "", "package ID to scan (default: every package in the feed)")
+	feedDepsCmd.Flags().Float64("max-rps", 0, "cap requests per second against the feed (default: unlimited); a single 429/503 is retried a few times with backoff regardless")
 	feedCmd.AddCommand(feedDepsCmd)
 }

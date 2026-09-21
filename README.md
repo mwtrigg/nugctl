@@ -137,6 +137,28 @@ to remove it entirely.
 `package` can also be invoked as `pkg` or `nupkg`. Run any command with `--help` for its
 full flag list and examples, e.g. `nugctl package search --help`.
 
+### `feed deps`
+
+Checks every package version in the feed (or just `--package <id>`) for dependencies that
+don't actually resolve — either the dependency package doesn't exist in the feed at all
+(`missing`), or it exists but no listed version satisfies the required range
+(`unsatisfied`):
+
+```sh
+nugctl feed deps
+nugctl feed deps --package Newtonsoft.Json
+nugctl feed deps -o json
+```
+
+A 429 or 503 response (e.g. from a feed's own rate limiter) is retried a few times with
+backoff, honoring the response's `Retry-After` header when it sends one, rather than
+aborting the scan outright. For a feed that rate-limits aggressively, cap the request
+rate up front instead of relying on retries:
+
+```sh
+nugctl feed deps --max-rps 5
+```
+
 ## Output
 
 Every command supports `-o table|json|yaml` (default `table`). Use `--properties` to

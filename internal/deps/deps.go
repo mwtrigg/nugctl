@@ -7,6 +7,7 @@ package deps
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/mwtrigg/nugctl/internal/client"
 	"github.com/mwtrigg/nugctl/internal/nugetversion"
@@ -76,16 +77,23 @@ func (r *Report) ExitCode() int {
 // Options controls which packages Run scans.
 type Options struct {
 	Package string // target package ID; "" = scan every package in the feed
+
+	// MaxRPS caps the rate of requests Run issues against the feed. Zero
+	// (the default) means unlimited — nugctl fires requests as fast as it
+	// can. Set this when a feed sits behind a rate limiter (e.g. nginx
+	// limit_req) that would otherwise reject requests mid-scan.
+	MaxRPS float64
 }
 
 // Run scans dependencyGroups across the target package(s) and returns the
 // full report. It never returns an error — a fatal setup failure (e.g. the
-// feed's package list or a target package's registration can't be fetched)
-// is represented as Report.Aborted.
+// feed's package list or a target package's registration can't be fetched,
+// after retries) is represented as Report.Aborted.
 func Run(c *client.Client, opts Options) *Report {
 	r := &Report{FeedURL: c.BaseURL}
+	s := &scanner{c: c, pace: newPacer(opts.MaxRPS)}
 
-	ids, err := packageIDs(c, opts)
+	ids, err := packageIDs(s, opts)
 	if err != nil {
 		r.Aborted = true
 		r.AbortReason = err.Error()
@@ -95,15 +103,15 @@ func Run(c *client.Client, opts Options) *Report {
 		return r
 	}
 
-	cache := newFeedCache(c)
+	cache := newFeedCache(s)
 	for _, id := range ids {
-		idx, err := c.Registration(id)
+		idx, err := s.registration(id)
 		if err != nil {
 			r.Aborted = true
 			r.AbortReason = fmt.Sprintf("fetching registration for %s: %v", id, err)
 			return r
 		}
-		entries, err := registrationEntries(c, idx)
+		entries, err := registrationEntries(s, idx)
 		if err != nil {
 			r.Aborted = true
 			r.AbortReason = fmt.Sprintf("fetching registration pages for %s: %v", id, err)
@@ -129,7 +137,7 @@ func Run(c *client.Client, opts Options) *Report {
 // fetching any page the feed left out-of-line (only "@id" and "count", per
 // the NuGet v3 registration schema — see RegistrationPage.Inline) rather
 // than inlining its leaves.
-func registrationEntries(c *client.Client, idx *client.RegistrationIndex) ([]client.CatalogEntry, error) {
+func registrationEntries(s *scanner, idx *client.RegistrationIndex) ([]client.CatalogEntry, error) {
 	var entries []client.CatalogEntry
 	for _, page := range idx.Items {
 		if page.Inline() {
@@ -141,7 +149,7 @@ func registrationEntries(c *client.Client, idx *client.RegistrationIndex) ([]cli
 		if page.ID == "" {
 			return nil, fmt.Errorf("registration page has no items and no @id to fetch")
 		}
-		full, err := c.RegistrationPageAt(page.ID)
+		full, err := s.registrationPageAt(page.ID)
 		if err != nil {
 			return nil, fmt.Errorf("fetching registration page %s: %w", page.ID, err)
 		}
@@ -213,23 +221,23 @@ func anySatisfies(versions []nugetversion.Version, rng *nugetversion.Range) bool
 // packageIDs returns the package IDs Run should walk: just opts.Package if
 // set (its existence is confirmed by Run's own registration fetch), or
 // every package ID discovered via a full, deduplicated search sweep.
-func packageIDs(c *client.Client, opts Options) ([]string, error) {
+func packageIDs(s *scanner, opts Options) ([]string, error) {
 	if opts.Package != "" {
 		return []string{opts.Package}, nil
 	}
-	return discoverAllIDs(c)
+	return discoverAllIDs(s)
 }
 
 // searchPageSize is how many hits discoverAllIDs requests per page while
 // sweeping the feed's full package list.
 const searchPageSize = 100
 
-func discoverAllIDs(c *client.Client) ([]string, error) {
+func discoverAllIDs(s *scanner) ([]string, error) {
 	seen := map[string]bool{}
 	var ids []string
 	skip := 0
 	for {
-		res, err := c.Search("", skip, searchPageSize, true)
+		res, err := s.search("", skip, searchPageSize, true)
 		if err != nil {
 			return nil, fmt.Errorf("listing packages: %w", err)
 		}
@@ -255,13 +263,13 @@ func discoverAllIDs(c *client.Client) ([]string, error) {
 // dependency many times over (or that also appears in the top-level scan
 // list) is only fetched from the feed once per run.
 type feedCache struct {
-	c        *client.Client
+	s        *scanner
 	exists   map[string]bool
 	versions map[string][]nugetversion.Version
 }
 
-func newFeedCache(c *client.Client) *feedCache {
-	return &feedCache{c: c, exists: map[string]bool{}, versions: map[string][]nugetversion.Version{}}
+func newFeedCache(s *scanner) *feedCache {
+	return &feedCache{s: s, exists: map[string]bool{}, versions: map[string][]nugetversion.Version{}}
 }
 
 // storeEntries records an already-fetched, already-expanded registration,
@@ -286,7 +294,7 @@ func (fc *feedCache) versionsOf(id string) (versions []nugetversion.Version, exi
 	if exists, ok := fc.exists[key]; ok {
 		return fc.versions[key], exists, nil
 	}
-	idx, ferr := fc.c.Registration(id)
+	idx, ferr := fc.s.registration(id)
 	if ferr != nil {
 		if client.IsNotFound(ferr) {
 			fc.exists[key] = false
@@ -295,7 +303,7 @@ func (fc *feedCache) versionsOf(id string) (versions []nugetversion.Version, exi
 		}
 		return nil, false, ferr
 	}
-	entries, ferr := registrationEntries(fc.c, idx)
+	entries, ferr := registrationEntries(fc.s, idx)
 	if ferr != nil {
 		return nil, false, ferr
 	}
@@ -316,4 +324,100 @@ func (fc *feedCache) set(key string, entries []client.CatalogEntry) {
 		}
 	}
 	fc.versions[key] = listed
+}
+
+// --- pacing and retry ---
+
+// maxRetries is how many additional attempts scanner makes after a request
+// fails with a 429 or 503, before giving up and surfacing the error.
+const maxRetries = 3
+
+// baseBackoff is the starting delay for the exponential backoff used when a
+// 429/503 response carries no Retry-After header.
+const baseBackoff = 500 * time.Millisecond
+
+// scanner wraps a *client.Client with the request pacing (Options.MaxRPS)
+// and 429/503 retry behavior every network call in this package should get,
+// so Run and its helpers never talk to c directly.
+type scanner struct {
+	c    *client.Client
+	pace *pacer
+}
+
+func (s *scanner) registration(id string) (*client.RegistrationIndex, error) {
+	var idx *client.RegistrationIndex
+	err := s.call(func() (err error) {
+		idx, err = s.c.Registration(id)
+		return err
+	})
+	return idx, err
+}
+
+func (s *scanner) registrationPageAt(pageURL string) (*client.RegistrationPage, error) {
+	var page *client.RegistrationPage
+	err := s.call(func() (err error) {
+		page, err = s.c.RegistrationPageAt(pageURL)
+		return err
+	})
+	return page, err
+}
+
+func (s *scanner) search(q string, skip, take int, prerelease bool) (*client.SearchResult, error) {
+	var res *client.SearchResult
+	err := s.call(func() (err error) {
+		res, err = s.c.Search(q, skip, take, prerelease)
+		return err
+	})
+	return res, err
+}
+
+// call paces the request against MaxRPS, then invokes fn, retrying on a
+// 429/503 response per maxRetries/baseBackoff and honoring Retry-After when
+// the feed sends one.
+func (s *scanner) call(fn func() error) error {
+	var err error
+	for attempt := 0; ; attempt++ {
+		s.pace.wait()
+		err = fn()
+		if err == nil {
+			return nil
+		}
+		retryAfter, retryable := client.Retryable(err)
+		if !retryable || attempt >= maxRetries {
+			return err
+		}
+		backoff := retryAfter
+		if backoff <= 0 {
+			backoff = baseBackoff * time.Duration(1<<attempt)
+		}
+		time.Sleep(backoff)
+	}
+}
+
+// pacer enforces a minimum interval between successive wait() calls, so a
+// scan issues at most MaxRPS requests per second. A zero or negative rps
+// means unlimited — wait becomes a no-op, preserving nugctl's previous
+// unthrottled behavior by default.
+type pacer struct {
+	interval time.Duration
+	last     time.Time
+}
+
+func newPacer(rps float64) *pacer {
+	if rps <= 0 {
+		return &pacer{}
+	}
+	return &pacer{interval: time.Duration(float64(time.Second) / rps)}
+}
+
+func (p *pacer) wait() {
+	if p.interval <= 0 {
+		return
+	}
+	if !p.last.IsZero() {
+		if elapsed := time.Since(p.last); elapsed < p.interval {
+			time.Sleep(p.interval - elapsed)
+		}
+	}
+	p.last = time.Now()
 }
