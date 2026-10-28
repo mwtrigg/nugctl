@@ -176,6 +176,9 @@ nugctl feed info --all-properties
 covers BaGetter, NuGet.org, Azure Artifacts, and most modern feeds. It does not currently
 support v2-only OData/Atom XML feeds (e.g. the Chocolatey community repository).
 
+`nugctl feed verify` does not yet check everything the v3 spec requires; the
+unchecked areas are listed in [docs/known-gaps.md](docs/known-gaps.md).
+
 ## Shell completion
 
 ```sh

@@ -71,11 +71,44 @@ func runPush(c *client.Client, opts Options, r *Report) {
 	switch {
 	case err == nil:
 		r.Add(Check{Name: "feed delete support", Category: cat, Status: StatusWarn, Detail: "package still downloadable by exact version after delete — feed unlists rather than hard-deletes; test package left behind"})
+		runRelist(c, opts, r, id, version)
 	case client.IsNotFound(err):
 		r.Add(Check{Name: "feed delete support", Category: cat, Status: StatusPass, Detail: "package no longer downloadable — feed hard-deletes"})
+		r.Add(Check{Name: "relist package", Category: cat, Status: StatusSkip, Detail: "feed hard-deletes on DELETE, so there is no unlisted version to relist"})
 	default:
 		r.Add(Check{Name: "feed delete support", Category: cat, Status: StatusFail, Detail: "unexpected error re-downloading after delete", Err: err.Error()})
+		r.Add(Check{Name: "relist package", Category: cat, Status: StatusSkip, Detail: "delete outcome unknown, relist not attempted"})
 	}
+}
+
+// runRelist exercises PackagePublish's relist (POST {id}/{version}) against a
+// feed that unlisted the test package on DELETE: the version must come back
+// as listed:true in registration and reappear in default search. The package
+// is unlisted again afterwards so the run leaves it as it found it.
+func runRelist(c *client.Client, opts Options, r *Report, id, version string) {
+	const cat = "push"
+	if err := c.Relist(id, version); err != nil {
+		r.Add(Check{Name: "relist package", Category: cat, Status: StatusFail, Err: err.Error()})
+		return
+	}
+	r.Add(Check{Name: "relist package", Category: cat, Status: StatusPass})
+
+	if !pollUntil(func() bool { return packageListed(c, id, version) && packageInSearch(c, id) }) {
+		r.Add(Check{Name: "relisted package listed and in search", Category: cat, Status: StatusFail, Detail: fmt.Sprintf("registration listed:true and default search did not both show the version after %s", pollTimeout)})
+	} else {
+		r.Add(Check{Name: "relisted package listed and in search", Category: cat, Status: StatusPass})
+	}
+
+	if err := c.DeleteWithOptions(id, version, client.DeleteOptions{Force: opts.ForceDelete}); err != nil {
+		r.Add(Check{Name: "re-unlist after relist", Category: cat, Status: StatusWarn, Detail: "test package left listed", Err: err.Error()})
+		return
+	}
+	r.Add(Check{Name: "re-unlist after relist", Category: cat, Status: StatusPass})
+}
+
+func packageListed(c *client.Client, id, version string) bool {
+	entry, err := c.RegistrationVersion(id, version)
+	return err == nil && entry != nil && entry.Version == version && entry.Listed
 }
 
 func packageVisible(c *client.Client, id, version string) bool {

@@ -563,6 +563,20 @@ func (c *Client) DeleteWithOptions(id, version string, opts DeleteOptions) error
 	})
 }
 
+// --- Relist ---
+
+// Relist relists an unlisted package version: PackagePublish/2.0.0's
+// POST {@id}/{ID}/{VERSION}, which feeds answer with 200 (also when the
+// version is already listed) or 404 when the version does not exist
+// (https://learn.microsoft.com/nuget/api/package-publish-resource#relist-a-package).
+func (c *Client) Relist(id, version string) error {
+	return c.withResource("PackagePublish", c.BaseURL+"/api/v2/package", func(base string) error {
+		relistURL := fmt.Sprintf("%s/%s/%s", strings.TrimRight(base, "/"), id, version)
+		_, err := c.doRequest(http.MethodPost, relistURL, nil, "")
+		return err
+	})
+}
+
 // --- Deprecation ---
 
 type DeprecationRequest struct {
