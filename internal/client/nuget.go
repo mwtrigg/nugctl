@@ -248,8 +248,42 @@ func (p RegistrationPage) Inline() bool {
 	return len(p.Items) > 0 || p.Count == 0
 }
 
+// RegistrationLeaf is one version's registration leaf. Per the NuGet v3
+// registration schema its catalogEntry has two shapes: inside a registration
+// page (an inlined leaf) it is the catalog entry object, while in a
+// standalone leaf document ({RegistrationsBaseUrl}/{id}/{version}.json) it is
+// a string, the URL of the catalog entry
+// (https://learn.microsoft.com/nuget/api/registration-base-url-resource#registration-leaf).
+// Both decode here: CatalogEntryURL holds the string, or the object's @id;
+// CatalogEntry is populated only for the object shape.
 type RegistrationLeaf struct {
-	CatalogEntry CatalogEntry `json:"catalogEntry"`
+	CatalogEntry    CatalogEntry `json:"catalogEntry"`
+	CatalogEntryURL string       `json:"-"`
+}
+
+func (l *RegistrationLeaf) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		CatalogEntry json.RawMessage `json:"catalogEntry"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*l = RegistrationLeaf{}
+	ce := bytes.TrimSpace(raw.CatalogEntry)
+	if len(ce) == 0 || string(ce) == "null" {
+		return nil
+	}
+	if ce[0] == '"' {
+		return json.Unmarshal(ce, &l.CatalogEntryURL)
+	}
+	var ref struct {
+		ID string `json:"@id"`
+	}
+	if err := json.Unmarshal(ce, &ref); err != nil {
+		return err
+	}
+	l.CatalogEntryURL = ref.ID
+	return json.Unmarshal(ce, &l.CatalogEntry)
 }
 
 // Tags unmarshals either shape a NuGet v3 feed may use for catalogEntry.tags:
@@ -325,13 +359,45 @@ func (c *Client) Registration(id string) (*RegistrationIndex, error) {
 	return &idx, err
 }
 
+// RegistrationVersion returns the catalog entry for one version. It reads the
+// standalone registration leaf first; when that leaf carries catalogEntry as
+// a URL string (the spec'd shape) rather than an inlined object, the entry's
+// metadata is taken from the registration index instead, fetching any page
+// the feed left out-of-line.
 func (c *Client) RegistrationVersion(id, version string) (*CatalogEntry, error) {
 	var leaf RegistrationLeaf
 	err := c.withResource("RegistrationsBaseUrl", c.BaseURL+"/v3/registration", func(base string) error {
 		regURL := strings.TrimRight(base, "/") + "/" + strings.ToLower(id) + "/" + strings.ToLower(version) + ".json"
 		return c.get(regURL, &leaf)
 	})
-	return &leaf.CatalogEntry, err
+	if err != nil || leaf.CatalogEntry.ID != "" {
+		return &leaf.CatalogEntry, err
+	}
+	return c.registrationIndexEntry(id, version)
+}
+
+// registrationIndexEntry finds version's catalog entry in id's registration
+// index, fetching out-of-line pages as needed.
+func (c *Client) registrationIndexEntry(id, version string) (*CatalogEntry, error) {
+	idx, err := c.Registration(id)
+	if err != nil {
+		return nil, err
+	}
+	for _, page := range idx.Items {
+		if !page.Inline() {
+			fetched, err := c.RegistrationPageAt(page.ID)
+			if err != nil {
+				return nil, err
+			}
+			page = *fetched
+		}
+		for i := range page.Items {
+			if strings.EqualFold(page.Items[i].CatalogEntry.Version, version) {
+				return &page.Items[i].CatalogEntry, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("version %s of %s not found in the registration index", version, id)
 }
 
 // RegistrationPageAt fetches a registration page document by its own
