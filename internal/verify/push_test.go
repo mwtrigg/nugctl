@@ -24,6 +24,8 @@ type fakeFeed struct {
 	rejectAllDeletes bool // if true, every DELETE fails with 409 regardless of force
 	downloaded       map[string]bool
 	deleteQueries    []string // raw query string of every DELETE request received, in order
+	noRelist         bool     // if true, POST relist is rejected with 405 (feed without relist)
+	relists          int      // number of successful POST relist requests
 }
 
 func newFakeFeed(hardDelete bool) *fakeFeed {
@@ -90,8 +92,11 @@ func (f *fakeFeed) server() *httptest.Server {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
+		f.mu.Lock()
+		listed := !f.unlisted[id+"/"+version]
+		f.mu.Unlock()
 		json.NewEncoder(w).Encode(map[string]any{
-			"catalogEntry": map[string]any{"id": id, "version": version},
+			"catalogEntry": map[string]any{"id": id, "version": version, "listed": listed},
 		})
 	})
 
@@ -114,15 +119,25 @@ func (f *fakeFeed) server() *httptest.Server {
 	})
 
 	mux.HandleFunc("/publish/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodDelete {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
 		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/publish/"), "/")
 		id, version := parts[0], parts[1]
 		key := id + "/" + version
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		if r.Method == http.MethodPost && !f.noRelist {
+			if _, ok := f.packages[key]; !ok {
+				http.Error(w, "not found", http.StatusNotFound)
+				return
+			}
+			delete(f.unlisted, key)
+			f.relists++
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.Method != http.MethodDelete {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		f.deleteQueries = append(f.deleteQueries, r.URL.RawQuery)
 		if f.rejectAllDeletes {
 			w.Header().Set("Content-Type", "application/problem+json")
@@ -183,6 +198,9 @@ func TestRunPush_FullRoundTrip_UnlistOnly(t *testing.T) {
 		"unlist/delete package":                  StatusPass,
 		"package disappears from default search": StatusPass,
 		"feed delete support":                    StatusWarn,
+		"relist package":                         StatusPass,
+		"relisted package listed and in search":  StatusPass,
+		"re-unlist after relist":                 StatusPass,
 	}
 	for name, wantStatus := range want {
 		if statuses[name] != wantStatus {
@@ -210,6 +228,39 @@ func TestRunPush_FullRoundTrip_HardDelete(t *testing.T) {
 	if got != StatusPass {
 		t.Errorf("feed delete support = %s, want pass for a hard-delete feed", got)
 	}
+	if got := checkStatus(r, "relist package"); got != StatusSkip {
+		t.Errorf("relist package = %s, want skip on a hard-delete feed", got)
+	}
+	if feed.relists != 0 {
+		t.Errorf("relist POSTs = %d, want 0 on a hard-delete feed", feed.relists)
+	}
+}
+
+// TestRunPush_UnlistOnly_RelistUnsupported verifies a feed that unlists on
+// DELETE but rejects PackagePublish's POST relist fails the relist check.
+func TestRunPush_UnlistOnly_RelistUnsupported(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	feed := newFakeFeed(false)
+	feed.noRelist = true
+	srv := feed.server()
+	defer srv.Close()
+
+	c := client.New(srv.URL, "test-key", false, false, true)
+	r := &Report{}
+	runPush(c, Options{Push: true}, r)
+
+	if got := checkStatus(r, "relist package"); got != StatusFail {
+		t.Errorf("relist package = %s, want fail when POST relist is rejected", got)
+	}
+}
+
+func checkStatus(r *Report, name string) Status {
+	for _, chk := range r.Checks {
+		if chk.Name == name {
+			return chk.Status
+		}
+	}
+	return ""
 }
 
 // TestRunPush_DefaultMode_RecentDownloadGuard_FailsCleanupNoRetry verifies
@@ -276,8 +327,15 @@ func TestRunPush_ForceDelete_SendsForceTrue(t *testing.T) {
 
 	feed.mu.Lock()
 	defer feed.mu.Unlock()
-	if len(feed.deleteQueries) != 1 || !strings.Contains(feed.deleteQueries[0], "force=true") {
-		t.Errorf("expected exactly one DELETE with force=true, got %v", feed.deleteQueries)
+	// Two DELETEs on an unlist-only feed: the cleanup delete, then the
+	// re-unlist after the relist check. Both must carry force=true.
+	if len(feed.deleteQueries) != 2 {
+		t.Fatalf("expected two DELETEs (delete, re-unlist after relist), got %v", feed.deleteQueries)
+	}
+	for _, q := range feed.deleteQueries {
+		if !strings.Contains(q, "force=true") {
+			t.Errorf("expected every DELETE to carry force=true, got %v", feed.deleteQueries)
+		}
 	}
 }
 
