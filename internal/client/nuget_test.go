@@ -140,3 +140,37 @@ func TestRegistrationLeaf_UnmarshalBothCatalogEntryShapes(t *testing.T) {
 		t.Fatalf("object shape decoded as %+v", o)
 	}
 }
+
+// TestSearch_SendsSemVerLevel2 checks Search opts into SemVer 2.0.0 the way
+// current NuGet clients do, and that SearchWith leaves out parameters it
+// isn't given (the spec's defaults then apply).
+func TestSearch_SendsSemVerLevel2(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Write([]byte(`{"version":"3.0.0","resources":[{"@id":"` + "http://" + r.Host + `/q","@type":"SearchQueryService/3.4.0"}]}`))
+			return
+		}
+		got = append(got, r.URL.RawQuery)
+		w.Write([]byte(`{"totalHits":0,"data":[]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", false, false, true)
+	if _, err := c.Search("x", 0, 5, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.SearchWith(SearchParams{Query: "x", Take: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("queries = %v", got)
+	}
+	if want := "q=x&semVerLevel=2.0.0&skip=0&take=5"; got[0] != want {
+		t.Errorf("Search query = %q, want %q", got[0], want)
+	}
+	if want := "q=x&skip=0&take=5"; got[1] != want {
+		t.Errorf("SearchWith query = %q, want %q", got[1], want)
+	}
+}

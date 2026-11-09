@@ -28,10 +28,6 @@ feeds that unlist on DELETE).
   `catalogEntry.dependencyGroups[].dependencies[]` (`id`, `range`,
   `registration`). A feed that serves no dependency groups passes today,
   and clients then install no dependencies.
-- [ ] **Search: `versions[]`, `prerelease`, `semVerLevel`.** Assert
-  `data[].versions[]` exists with `@id`, `version` and `downloads`; that a
-  prerelease-only package is absent without `prerelease=true`; and that a
-  SemVer 2.0.0 version (`1.0.0-rc.1`) is absent without `semVerLevel=2.0.0`.
 - [ ] **Unlisted versions stay in registration.** After unlisting on a feed
   that unlists rather than deletes, registration must still list the
   version with `listed:false`, and the flat container must still list it.
@@ -59,3 +55,10 @@ feeds that unlist on DELETE).
   client looks up by exact match (list from NuGet.Client `ServiceTypes.cs`).
   Note `SearchQueryService/3.0.0-rc` is a documented alias but is *not* on
   that list.
+- [x] **Search `versions[]`, `prerelease`, `semVerLevel`, autocomplete** (#5).
+  Readonly: `search result shape (versions[])`, `autocomplete: package ids`,
+  `autocomplete: package versions`. With `--push`: a prerelease-only and a
+  SemVer 2.0.0-only package, and `search excludes prerelease by default`,
+  `search excludes SemVer 2.0.0 without semVerLevel`, plus the same two for
+  autocomplete when it is advertised. nugctl's own searches now send
+  `semVerLevel=2.0.0`, as NuGet's client does.

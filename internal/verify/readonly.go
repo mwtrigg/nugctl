@@ -48,6 +48,11 @@ func runReadonly(c *client.Client, opts Options, r *Report) {
 		}
 	}
 
+	if present["SearchQueryService"] {
+		checkSearchShape(c, r)
+	}
+	checkAutocomplete(c, opts, r)
+
 	r.Add(Check{
 		Name: "resource responds: PackagePublish/2.0.0", Category: "readonly",
 		Status: StatusSkip,

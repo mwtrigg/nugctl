@@ -148,6 +148,12 @@ func (c *Client) RefreshServiceIndex() (*ServiceIndex, error) {
 	return c.index, nil
 }
 
+// ResourceURL returns the @id of the first service index resource whose
+// @type starts with typePrefix.
+func (c *Client) ResourceURL(typePrefix string) (string, error) {
+	return c.resourceURL(typePrefix)
+}
+
 func (c *Client) resourceURL(typePrefix string) (string, error) {
 	idx, err := c.ServiceIndex()
 	if err != nil {
@@ -208,21 +214,57 @@ type SearchPackage struct {
 	IconURL        string   `json:"iconUrl,omitempty"`
 }
 
+// SemVerLevel2 is the semVerLevel query value that opts a search or
+// autocomplete request into SemVer 2.0.0 packages
+// (https://learn.microsoft.com/nuget/api/search-query-service-resource#request-parameters).
+// Without it a conformant feed returns only SemVer 1.0.0-compatible versions.
+const SemVerLevel2 = "2.0.0"
+
+// SearchParams are SearchQueryService query parameters. Prerelease false
+// omits the parameter entirely (the spec's default: prerelease excluded);
+// an empty SemVerLevel omits semVerLevel (SemVer 1.0.0 packages only).
+type SearchParams struct {
+	Query       string
+	Skip, Take  int
+	Prerelease  bool
+	SemVerLevel string
+}
+
+// Search queries SearchQueryService the way current NuGet clients do:
+// with semVerLevel=2.0.0, so SemVer 2.0.0 packages are included.
 func (c *Client) Search(q string, skip, take int, prerelease bool) (*SearchResult, error) {
+	return c.SearchWith(SearchParams{Query: q, Skip: skip, Take: take, Prerelease: prerelease, SemVerLevel: SemVerLevel2})
+}
+
+// SearchWith queries SearchQueryService with explicit parameters.
+func (c *Client) SearchWith(p SearchParams) (*SearchResult, error) {
 	var result SearchResult
 	err := c.withResource("SearchQueryService", c.BaseURL+"/v3/search", func(base string) error {
-		u, _ := url.Parse(base)
-		params := url.Values{}
-		params.Set("q", q)
-		params.Set("skip", fmt.Sprintf("%d", skip))
-		params.Set("take", fmt.Sprintf("%d", take))
-		if prerelease {
-			params.Set("prerelease", "true")
-		}
-		u.RawQuery = params.Encode()
-		return c.get(u.String(), &result)
+		result = SearchResult{}
+		return c.get(SearchURL(base, p), &result)
 	})
 	return &result, err
+}
+
+// SearchURL builds a SearchQueryService (or SearchAutocompleteService
+// package-id) query URL against base.
+func SearchURL(base string, p SearchParams) string {
+	u, err := url.Parse(base)
+	if err != nil {
+		return base
+	}
+	params := u.Query()
+	params.Set("q", p.Query)
+	params.Set("skip", fmt.Sprintf("%d", p.Skip))
+	params.Set("take", fmt.Sprintf("%d", p.Take))
+	if p.Prerelease {
+		params.Set("prerelease", "true")
+	}
+	if p.SemVerLevel != "" {
+		params.Set("semVerLevel", p.SemVerLevel)
+	}
+	u.RawQuery = params.Encode()
+	return u.String()
 }
 
 // --- Registration ---
@@ -412,11 +454,21 @@ func (c *Client) RegistrationPageAt(pageURL string) (*RegistrationPage, error) {
 // --- Push ---
 
 // PushBytes uploads package bytes already read into memory. filename is
-// used for the multipart form's filename field only.
+// used for the multipart form's filename field only. The form field is
+// named "package", as NuGet's own client names it.
 func (c *Client) PushBytes(filename string, data []byte) error {
+	return c.PushBytesField("package", filename, data)
+}
+
+// PushBytesField is PushBytes with an explicit multipart form field name.
+// PackagePublish/2.0.0 takes the first multipart item as the .nupkg and
+// ignores its name and headers
+// (https://learn.microsoft.com/nuget/api/package-publish-resource#multipart-form-data),
+// so a conformant feed accepts any field name.
+func (c *Client) PushBytesField(field, filename string, data []byte) error {
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
-	fw, err := w.CreateFormFile("package", filename)
+	fw, err := w.CreateFormFile(field, filename)
 	if err != nil {
 		return err
 	}
@@ -679,4 +731,54 @@ func (c *Client) doRequest(method, rawURL string, body []byte, contentType strin
 		return nil, categorizeResp(resp, string(respBody), rawURL)
 	}
 	return respBody, nil
+}
+
+// RawResponse is an HTTP response read in full, for checks that need the
+// exact status, headers and bytes a feed sent.
+type RawResponse struct {
+	StatusCode int
+	Header     http.Header
+	Body       []byte
+}
+
+// Raw sends one request with the client's credentials and returns the
+// response whatever its status. Only transport failures are errors. Setting
+// Accept-Encoding in header turns off Go's transparent decompression, so the
+// caller sees Content-Encoding and the encoded body as sent.
+func (c *Client) Raw(method, rawURL string, header http.Header, body []byte) (*RawResponse, error) {
+	if c.Verbose {
+		fmt.Fprintf(os.Stderr, "%s %s\n", method, rawURL)
+	}
+	var rdr io.Reader
+	if body != nil {
+		rdr = bytes.NewReader(body)
+	}
+	req, err := http.NewRequest(method, rawURL, rdr)
+	if err != nil {
+		return nil, err
+	}
+	for k, vs := range header {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
+	c.setAuth(req)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, networkError(rawURL, err)
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	return &RawResponse{StatusCode: resp.StatusCode, Header: resp.Header, Body: b}, nil
+}
+
+// HTTPError converts a non-2xx RawResponse into the same categorized error
+// the other Client methods return.
+func HTTPError(resp *RawResponse, rawURL string) error {
+	ce := categorize(resp.StatusCode, string(resp.Body), rawURL)
+	ce.RetryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
+	return ce
 }
