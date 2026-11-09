@@ -18,6 +18,7 @@ run in CI: exit 0 means every executed check passed, exit 1 means at least
 one check failed, exit 2 means verify couldn't even run (e.g. the service
 index was unreachable).`,
 	Example: `  nugctl feed verify
+  # a read-only or proxy feed: no --push, name a package it can serve
   nugctl feed verify --package Newtonsoft.Json
   nugctl feed verify --push -o json`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -75,8 +76,8 @@ func printVerifyReport(r *verify.Report) {
 }
 
 func init() {
-	feedVerifyCmd.Flags().Bool("push", false, "also run round-trip checks (push, poll, download, unlist) against a writable feed")
-	feedVerifyCmd.Flags().String("package", "", "package ID to use for integrity checks (default: first hit of an unfiltered search)")
+	feedVerifyCmd.Flags().Bool("push", false, "also run round-trip checks (push, poll, download, unlist, relist, plus a few extra test packages) against a writable feed")
+	feedVerifyCmd.Flags().String("package", "", "package ID to use for integrity checks (default: first hit of an unfiltered search; set it for read-only or proxy feeds, whose search is often empty)")
 	feedVerifyCmd.Flags().Bool("force-delete", false, "append force=true to the round-trip's cleanup delete, for feeds (e.g. Barn) that reject deleting a recently-downloaded package with 409 otherwise; feed-specific extension, requires --push")
 	feedCmd.AddCommand(feedVerifyCmd)
 }

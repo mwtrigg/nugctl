@@ -13,9 +13,7 @@ feeds that unlist on DELETE).
 
 ## TODO
 
-- [ ] **Proxy / read-only feeds.** `feed verify` against a proxying feed
-  would catch a broken service index there. Document a "verify a read-only
-  or proxy feed with `--package <id>`" recipe in the README.
+None open at the moment.
 
 ## Done
 
@@ -54,3 +52,5 @@ feeds that unlist on DELETE).
   `registration dependencies` (missing fails; absent `range` or
   `registration` warns; a different range fails) and, on feeds that unlist,
   `unlisted version stays in registration (listed:false)`.
+- [x] **Proxy / read-only feeds** (#9). README, "Verifying a read-only or
+  proxy feed": run without `--push`, with `--package <id>`.

@@ -159,6 +159,54 @@ rate up front instead of relying on retries:
 nugctl feed deps --max-rps 5
 ```
 
+### `feed verify`
+
+Checks a feed against the published NuGet v3 protocol
+([learn.microsoft.com/nuget/api](https://learn.microsoft.com/nuget/api/overview)) and
+reports each check as `pass`, `fail`, `warn` or `skip`. Built for CI: exit 0 means no
+check failed, 1 means at least one did, 2 means verify could not run at all (for example
+the service index was unreachable). Warnings and skips never change the exit code.
+
+- **Read-only checks** (always run): the service index advertises the core resources,
+  under `@type` strings NuGet's own client looks up (`client type string: ...` warns
+  otherwise); search and autocomplete answer in the documented shape; and, for one
+  package, the registration (required properties, out-of-line pages, gzip), the flat
+  container (version list, `.nuspec` download) and the package hash agree.
+- **Negative checks** (always run): 404 for a package that doesn't exist, and 401/403 for
+  garbled credentials (only when credentials are configured).
+- **Round-trip checks** (`--push`, writable feeds only): push, find, download, unlist or
+  delete, relist, plus extra packages that check the prerelease and `semVerLevel` search
+  defaults, version normalization (`1.00.0.0` is `1.0.0`), original id casing,
+  dependencies, the multipart field name and relist of an absent version.
+
+A check fails when the feed breaks a rule the spec states. Where the spec allows a choice
+or the feature is optional (an uncompressed registration hive, a feed that replaces on
+re-push, no autocomplete resource), the check warns or skips instead. What is still
+unchecked is listed in [docs/known-gaps.md](docs/known-gaps.md).
+
+#### Verifying a read-only or proxy feed
+
+A feed you can't (or shouldn't) push to, such as a pull-through proxy of nuget.org or a
+read-only mirror, can still be verified: leave out `--push`, and name a package the feed
+can serve with `--package`:
+
+```sh
+nugctl feed verify --url https://proxy.example.com/v3/index.json --package Newtonsoft.Json
+```
+
+- Without `--push`, verify sends no push, delete or relist. The one exception: when an
+  API key or Basic Auth credentials are configured, the negative auth check sends one
+  `DELETE` with deliberately wrong credentials for a random package id that doesn't
+  exist. Leave credentials out (or use a read-only profile) if even that is unwelcome.
+- Without `--package`, verify picks the first package an unfiltered search returns. A
+  proxy usually has nothing cached at first, so search comes back empty and the package
+  checks skip. `--package` makes them run.
+- On a proxy, pick a package that exists upstream. The first request may make the proxy
+  fetch it from upstream, so a slow first answer is normal.
+- This catches a broken service index, broken registration or flat-container responses
+  and hash mismatches on the proxy itself; it doesn't exercise anything that needs a
+  write.
+
 ## Output
 
 Every command supports `-o table|json|yaml` (default `table`). Use `--properties` to
