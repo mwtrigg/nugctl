@@ -31,11 +31,6 @@ feeds that unlist on DELETE).
 - [ ] **Unlisted versions stay in registration.** After unlisting on a feed
   that unlists rather than deletes, registration must still list the
   version with `listed:false`, and the flat container must still list it.
-- [ ] **Flat-container `.nuspec` download** (`{id}/{v}/{id}.nuspec`) is
-  spec-defined and unchecked.
-- [ ] **Version normalization.** Push `1.00.0.0`; expect the flat container
-  to list `1.0.0`, a push of `1.0` to get 409, and a download via `1.0.0` to
-  work.
 - [ ] **Push body: first multipart part, any name.** nugctl always names the
   part `package`, so a feed that requires that name passes. Optional: push
   once with a different form field name.
@@ -62,3 +57,10 @@ feeds that unlist on DELETE).
   `search excludes SemVer 2.0.0 without semVerLevel`, plus the same two for
   autocomplete when it is advertised. nugctl's own searches now send
   `semVerLevel=2.0.0`, as NuGet's client does.
+- [x] **Flat container `.nuspec` and version normalization** (#6). Readonly:
+  `flat container .nuspec download`. With `--push`: a `1.00.0.0` package and
+  `version normalized: flat container` / `: registration`,
+  `download via normalized version`, `nuspec download matches pushed
+  package` (re-serialized manifest warns), `duplicate push of an equivalent
+  version` (409 passes; an accepted replace that leaves one version warns),
+  and `unlisted version stays in flat container` on feeds that unlist.

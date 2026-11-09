@@ -89,6 +89,10 @@ func seeded(t *testing.T) *fakeFeed {
 	return feed
 }
 
+func newTestClient(url string) *client.Client {
+	return client.New(url, "test-key", false, false, true)
+}
+
 func runReadonlyOn(t *testing.T, feed *fakeFeed, opts Options) *Report {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())

@@ -81,6 +81,7 @@ func runPackageIntegrity(c *client.Client, opts Options, r *Report) {
 			r.Add(Check{Name: "registration well-formed", Category: cat, Status: StatusSkip, Detail: skip})
 			r.Add(Check{Name: "flat-container matches registration", Category: cat, Status: StatusSkip, Detail: skip})
 			r.Add(Check{Name: "package hash matches registration", Category: cat, Status: StatusSkip, Detail: skip})
+			r.Add(Check{Name: "flat container .nuspec download", Category: cat, Status: StatusSkip, Detail: skip})
 			return
 		}
 		id = res.Data[0].ID
@@ -91,6 +92,11 @@ func runPackageIntegrity(c *client.Client, opts Options, r *Report) {
 		r.Add(Check{Name: "registration well-formed", Category: cat, Status: StatusFail, Detail: "fetching registration for " + id, Err: err.Error()})
 		r.Add(Check{Name: "flat-container matches registration", Category: cat, Status: StatusSkip, Detail: "registration fetch failed"})
 		r.Add(Check{Name: "package hash matches registration", Category: cat, Status: StatusSkip, Detail: "registration fetch failed"})
+		if flat, ferr := c.FlatContainerVersions(id); ferr == nil && len(flat.Versions) > 0 {
+			checkNuspecDownload(c, r, id, flat.Versions[0])
+		} else {
+			r.Add(Check{Name: "flat container .nuspec download", Category: cat, Status: StatusSkip, Detail: "no version known for " + id})
+		}
 		return
 	}
 
@@ -118,6 +124,15 @@ func runPackageIntegrity(c *client.Client, opts Options, r *Report) {
 		r.Add(Check{Name: "flat-container matches registration", Category: cat, Status: StatusFail, Detail: fmt.Sprintf("registration=%v flat-container=%v", regVersions, flat.Versions)})
 	} else {
 		r.Add(Check{Name: "flat-container matches registration", Category: cat, Status: StatusPass})
+	}
+
+	switch {
+	case len(regVersions) > 0:
+		checkNuspecDownload(c, r, id, regVersions[0])
+	case flat != nil && len(flat.Versions) > 0:
+		checkNuspecDownload(c, r, id, flat.Versions[0])
+	default:
+		r.Add(Check{Name: "flat container .nuspec download", Category: cat, Status: StatusSkip, Detail: "no version known for " + id})
 	}
 
 	runHashCheck(c, id, idx, r)

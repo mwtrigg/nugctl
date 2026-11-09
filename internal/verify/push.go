@@ -83,6 +83,7 @@ func runRoundTrip(c *client.Client, opts Options, r *Report, stamp int64) bool {
 	switch {
 	case err == nil:
 		r.Add(Check{Name: "feed delete support", Category: cat, Status: StatusWarn, Detail: "package still downloadable by exact version after delete — feed unlists rather than hard-deletes; test package left behind"})
+		checkUnlistedInFlat(c, r, id, version)
 		runRelist(c, opts, r, id, version)
 	case client.IsNotFound(err):
 		r.Add(Check{Name: "feed delete support", Category: cat, Status: StatusPass, Detail: "package no longer downloadable — feed hard-deletes"})
@@ -105,6 +106,20 @@ type pkgRef struct {
 func runPushExtras(c *client.Client, opts Options, r *Report, stamp int64) {
 	var pushed []pkgRef
 	pushed = append(pushed, runSearchFilterChecks(c, r, stamp)...)
+
+	// One package exercises normalization: a non-normalized version.
+	meta := pkgRef{ID: fmt.Sprintf("NugCtl.Verify.Meta-%d", stamp), Version: "1.00.0.0"}
+	metaData, err := buildNupkg(meta.ID, meta.Version, nil)
+	if err == nil {
+		err = c.PushBytes(fmt.Sprintf("%s.%s.nupkg", meta.ID, meta.Version), metaData)
+	}
+	if err != nil {
+		r.Add(Check{Name: "push non-normalized version", Category: "push", Status: StatusFail, Detail: fmt.Sprintf("%s %s", meta.ID, meta.Version), Err: err.Error()})
+	} else {
+		r.Add(Check{Name: "push non-normalized version", Category: "push", Status: StatusPass, Detail: fmt.Sprintf("%s %s", meta.ID, meta.Version)})
+		pushed = append(pushed, meta)
+		runNormalizationChecks(c, r, meta, metaData)
+	}
 	cleanupExtras(c, opts, r, pushed)
 }
 

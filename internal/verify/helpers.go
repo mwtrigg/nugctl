@@ -2,6 +2,7 @@ package verify
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -81,4 +82,8 @@ func missing(fields map[string]*string) []string {
 		}
 	}
 	return out
+}
+
+func asClientError(err error, target **client.ClientError) bool {
+	return errors.As(err, target)
 }
