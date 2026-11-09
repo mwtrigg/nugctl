@@ -2,6 +2,7 @@ package client
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -172,5 +173,44 @@ func TestSearch_SendsSemVerLevel2(t *testing.T) {
 	}
 	if want := "q=x&skip=0&take=5"; got[1] != want {
 		t.Errorf("SearchWith query = %q, want %q", got[1], want)
+	}
+}
+
+// TestRetryRateLimited checks 429s are retried (body and all) only when
+// RetryRateLimited is set, honoring Retry-After.
+func TestRetryRateLimited(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	hits := 0
+	var bodies []int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, len(b))
+		if hits%3 != 0 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", false, false, true)
+	resp, err := c.Raw(http.MethodPut, srv.URL+"/x", nil, []byte("payload"))
+	if err != nil || resp.StatusCode != http.StatusTooManyRequests || hits != 1 {
+		t.Fatalf("without RetryRateLimited: status=%v err=%v hits=%d, want one 429", resp, err, hits)
+	}
+
+	hits = 0
+	bodies = nil
+	c.RetryRateLimited = true
+	resp, err = c.Raw(http.MethodPut, srv.URL+"/x", nil, []byte("payload"))
+	if err != nil || resp.StatusCode != http.StatusCreated || hits != 3 {
+		t.Fatalf("with RetryRateLimited: status=%v err=%v hits=%d, want 201 after 3 tries", resp, err, hits)
+	}
+	for _, n := range bodies {
+		if n != len("payload") {
+			t.Errorf("retried request bodies = %v, want the full payload each time", bodies)
+		}
 	}
 }

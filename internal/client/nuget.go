@@ -23,8 +23,13 @@ type Client struct {
 	Verbose       bool
 	Insecure      bool
 	NoCache       bool
-	httpClient    *http.Client
-	index         *ServiceIndex
+	// RetryRateLimited makes every request retry a 429 or 503 response a
+	// few times, waiting the response's Retry-After (or a short backoff)
+	// first. feed verify turns it on: it sends bursts of requests, and a
+	// feed's own rate limiter answering 429 is not a protocol failure.
+	RetryRateLimited bool
+	httpClient       *http.Client
+	index            *ServiceIndex
 }
 
 func New(baseURL, apiKey string, verbose, insecure, noCache bool) *Client {
@@ -33,13 +38,59 @@ func New(baseURL, apiKey string, verbose, insecure, noCache bool) *Client {
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 		fmt.Fprintln(os.Stderr, "warning: TLS certificate verification is disabled (--insecure)")
 	}
-	return &Client{
-		BaseURL:    strings.TrimRight(baseURL, "/"),
-		APIKey:     apiKey,
-		Verbose:    verbose,
-		Insecure:   insecure,
-		NoCache:    noCache,
-		httpClient: &http.Client{Transport: transport},
+	c := &Client{
+		BaseURL:  strings.TrimRight(baseURL, "/"),
+		APIKey:   apiKey,
+		Verbose:  verbose,
+		Insecure: insecure,
+		NoCache:  noCache,
+	}
+	c.httpClient = &http.Client{Transport: &rateLimitRetry{next: transport, c: c}}
+	return c
+}
+
+// Retry policy for RetryRateLimited.
+const (
+	rateLimitRetries = 5
+	rateLimitBackoff = 500 * time.Millisecond
+	rateLimitMaxWait = 30 * time.Second
+)
+
+// rateLimitRetry retries 429 and 503 responses when its client has
+// RetryRateLimited set, honoring Retry-After (RFC 9110 §10.2.3).
+type rateLimitRetry struct {
+	next http.RoundTripper
+	c    *Client
+}
+
+func (t *rateLimitRetry) RoundTrip(req *http.Request) (*http.Response, error) {
+	for attempt := 0; ; attempt++ {
+		resp, err := t.next.RoundTrip(req)
+		if err != nil || !t.c.RetryRateLimited || attempt >= rateLimitRetries ||
+			(resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode != http.StatusServiceUnavailable) ||
+			(req.Body != nil && req.GetBody == nil) {
+			return resp, err
+		}
+		wait := parseRetryAfter(resp.Header.Get("Retry-After"))
+		if wait <= 0 {
+			wait = rateLimitBackoff << attempt
+		}
+		if wait > rateLimitMaxWait {
+			wait = rateLimitMaxWait
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if t.c.Verbose {
+			fmt.Fprintf(os.Stderr, "HTTP %d from %s; retrying in %s\n", resp.StatusCode, req.URL, wait)
+		}
+		time.Sleep(wait)
+		next := req.Clone(req.Context())
+		if req.Body != nil {
+			if next.Body, err = req.GetBody(); err != nil {
+				return nil, err
+			}
+		}
+		req = next
 	}
 }
 

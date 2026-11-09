@@ -27,6 +27,7 @@ func runNegative(c *client.Client, r *Report) {
 	}
 
 	bad := client.New(c.BaseURL, "definitely-not-a-real-api-key", c.Verbose, c.Insecure, true)
+	bad.RetryRateLimited = c.RetryRateLimited
 	if c.BasicAuthUser != "" {
 		bad.BasicAuthUser = c.BasicAuthUser
 		bad.BasicAuthPass = "definitely-not-the-real-password"

@@ -79,6 +79,9 @@ type Options struct {
 // returned Report (including Report.Aborted for fatal setup failures).
 func Run(c *client.Client, opts Options) *Report {
 	r := &Report{FeedURL: c.BaseURL}
+	// Verify sends bursts of requests; a feed's rate limiter answering 429
+	// (with Retry-After) is not a conformance failure, so wait and retry.
+	c.RetryRateLimited = true
 	runReadonly(c, opts, r)
 	if r.Aborted {
 		return r
