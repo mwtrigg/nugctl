@@ -48,10 +48,14 @@ feeds that unlist on DELETE).
   covers the happy path, and only on feeds that unlist on DELETE).
 - [ ] **gzip on RegistrationsBaseUrl/3.4.0 and 3.6.0.** `Accept-Encoding:
   gzip` should get `Content-Encoding: gzip`. Unchecked.
-- [ ] **Service index type strings.** "resource present" matches by prefix,
-  so a feed advertising only a type no Microsoft client looks up passes.
-  Optional: warn when none of the exact strings clients use is present (for
-  example `SearchQueryService/3.0.0-rc`, `RegistrationsBaseUrl/3.6.0`).
 - [ ] **Proxy / read-only feeds.** `feed verify` against a proxying feed
   would catch a broken service index there. Document a "verify a read-only
   or proxy feed with `--package <id>`" recipe in the README.
+
+## Done
+
+- [x] **Service index type strings** (#8). `client type string: <resource>`
+  warns when none of a resource's advertised `@type` values is one NuGet's
+  client looks up by exact match (list from NuGet.Client `ServiceTypes.cs`).
+  Note `SearchQueryService/3.0.0-rc` is a documented alias but is *not* on
+  that list.

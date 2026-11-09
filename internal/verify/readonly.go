@@ -38,6 +38,7 @@ func runReadonly(c *client.Client, opts Options, r *Report) {
 		}
 		r.Add(Check{Name: "resource present: " + t, Category: "readonly", Status: status, Detail: detail})
 	}
+	checkClientTypeStrings(idx, r)
 
 	if present["SearchQueryService"] {
 		if _, err := c.Search("", 0, 1, false); err != nil {
