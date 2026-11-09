@@ -105,6 +105,7 @@ type pkgRef struct {
 // can't see. Every package it pushes is deleted (or unlisted) at the end.
 func runPushExtras(c *client.Client, opts Options, r *Report, stamp int64) {
 	var pushed []pkgRef
+	checkRelistAbsent(c, r, fmt.Sprintf("nugctl-verify-%d", stamp))
 	pushed = append(pushed, runSearchFilterChecks(c, r, stamp)...)
 
 	// One package exercises normalization: a non-normalized version.
@@ -136,6 +137,54 @@ func pushExtra(c *client.Client, r *Report, name string, p pkgRef, deps []nuspec
 	}
 	r.Add(Check{Name: name, Category: "push", Status: StatusPass, Detail: fmt.Sprintf("%s %s", p.ID, p.Version)})
 	return true
+}
+
+// pushAnyField pushes p with the multipart field named "nupkg" instead of
+// "package". PackagePublish takes "the first item in the request body" as
+// the .nupkg and ignores "the file name or any other headers of the
+// multipart items"
+// (https://learn.microsoft.com/nuget/api/package-publish-resource#multipart-form-data),
+// so a conformant feed must accept it. NuGet's own client always sends
+// "package", so a feed that insists on that name still works with it: a
+// rejection warns, and p is pushed again the usual way so the checks that
+// need it still run.
+func pushAnyField(c *client.Client, r *Report, p pkgRef) bool {
+	const name = "push accepts any multipart field name"
+	data, err := buildNupkg(p.ID, p.Version, nil)
+	if err != nil {
+		r.Add(Check{Name: name, Category: "push", Status: StatusFail, Err: err.Error()})
+		return false
+	}
+	filename := fmt.Sprintf("%s.%s.nupkg", p.ID, p.Version)
+	if err := c.PushBytesField("nupkg", filename, data); err != nil {
+		r.Add(Check{Name: name, Category: "push", Status: StatusWarn, Detail: "push with form field \"nupkg\" rejected; the spec ignores the field name (NuGet's client sends \"package\")", Err: err.Error()})
+		return pushExtra(c, r, "push prerelease-only package", p, nil, "package")
+	}
+	r.Add(Check{Name: name, Category: "push", Status: StatusPass, Detail: fmt.Sprintf("%s %s pushed as form field \"nupkg\"", p.ID, p.Version)})
+	r.Add(Check{Name: "push prerelease-only package", Category: "push", Status: StatusPass, Detail: fmt.Sprintf("%s %s", p.ID, p.Version)})
+	return true
+}
+
+// checkRelistAbsent POSTs a relist of a version of id that was never
+// pushed. PackagePublish's relist answers "404: No package with the
+// provided ID and VERSION exists"
+// (https://learn.microsoft.com/nuget/api/package-publish-resource#relist-a-package).
+// 405/501 means the feed has no relist at all: warned, since the relist
+// checks on unlist feeds already cover a missing relist.
+func checkRelistAbsent(c *client.Client, r *Report, id string) {
+	const name = "relist of an absent version gives 404"
+	const absent = "99.99.99"
+	err := c.Relist(id, absent)
+	switch {
+	case err == nil:
+		r.Add(Check{Name: name, Category: "push", Status: StatusFail, Detail: fmt.Sprintf("POST relist %s %s (never pushed) succeeded", id, absent)})
+	case client.IsNotFound(err):
+		r.Add(Check{Name: name, Category: "push", Status: StatusPass, Detail: fmt.Sprintf("%s %s", id, absent)})
+	case client.IsNotSupported(err):
+		r.Add(Check{Name: name, Category: "push", Status: StatusWarn, Detail: "feed does not implement POST relist", Err: err.Error()})
+	default:
+		r.Add(Check{Name: name, Category: "push", Status: StatusFail, Detail: fmt.Sprintf("POST relist %s %s: want 404", id, absent), Err: err.Error()})
+	}
 }
 
 // cleanupExtras deletes the extra test packages. Failure is a warning: the

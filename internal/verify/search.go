@@ -237,7 +237,7 @@ func runSearchFilterChecks(c *client.Client, r *Report, stamp int64) []pkgRef {
 	var pushed []pkgRef
 
 	pre := pkgRef{ID: fmt.Sprintf("NugCtl.Verify.Pre-%d", stamp), Version: "1.0.0-beta"}
-	if pushExtra(c, r, "push prerelease-only package", pre, nil, "package") {
+	if pushAnyField(c, r, pre) {
 		pushed = append(pushed, pre)
 		all := client.SearchParams{Query: pre.ID, Take: 20, Prerelease: true, SemVerLevel: client.SemVerLevel2}
 		if !pollUntil(func() bool { ok, _ := searchHas(c, all, pre.ID); return ok }) {

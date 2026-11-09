@@ -31,12 +31,6 @@ feeds that unlist on DELETE).
 - [ ] **Unlisted versions stay in registration.** After unlisting on a feed
   that unlists rather than deletes, registration must still list the
   version with `listed:false`, and the flat container must still list it.
-- [ ] **Push body: first multipart part, any name.** nugctl always names the
-  part `package`, so a feed that requires that name passes. Optional: push
-  once with a different form field name.
-- [ ] **Relist of an absent version.** PackagePublish says `POST` relist of a
-  version that does not exist gives 404. Not checked (the relist check only
-  covers the happy path, and only on feeds that unlist on DELETE).
 - [ ] **gzip on RegistrationsBaseUrl/3.4.0 and 3.6.0.** `Accept-Encoding:
   gzip` should get `Content-Encoding: gzip`. Unchecked.
 - [ ] **Proxy / read-only feeds.** `feed verify` against a proxying feed
@@ -64,3 +58,8 @@ feeds that unlist on DELETE).
   package` (re-serialized manifest warns), `duplicate push of an equivalent
   version` (409 passes; an accepted replace that leaves one version warns),
   and `unlisted version stays in flat container` on feeds that unlist.
+- [x] **Push field name and relist of an absent version** (#7). With
+  `--push`: `push accepts any multipart field name` (the prerelease package
+  goes up as form field `nupkg`; a rejection warns, because NuGet's client
+  always sends `package`, and the package is re-pushed) and
+  `relist of an absent version gives 404` (405/501, no relist at all, warns).
