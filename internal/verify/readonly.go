@@ -82,16 +82,18 @@ func runPackageIntegrity(c *client.Client, opts Options, r *Report) {
 			r.Add(Check{Name: "flat-container matches registration", Category: cat, Status: StatusSkip, Detail: skip})
 			r.Add(Check{Name: "package hash matches registration", Category: cat, Status: StatusSkip, Detail: skip})
 			r.Add(Check{Name: "flat container .nuspec download", Category: cat, Status: StatusSkip, Detail: skip})
+			r.Add(Check{Name: "registration required fields", Category: cat, Status: StatusSkip, Detail: skip})
 			return
 		}
 		id = res.Data[0].ID
 	}
 
-	idx, err := c.Registration(id)
+	reg, err := loadRegistration(c, id)
 	if err != nil {
 		r.Add(Check{Name: "registration well-formed", Category: cat, Status: StatusFail, Detail: "fetching registration for " + id, Err: err.Error()})
 		r.Add(Check{Name: "flat-container matches registration", Category: cat, Status: StatusSkip, Detail: "registration fetch failed"})
 		r.Add(Check{Name: "package hash matches registration", Category: cat, Status: StatusSkip, Detail: "registration fetch failed"})
+		r.Add(Check{Name: "registration required fields", Category: cat, Status: StatusSkip, Detail: "registration fetch failed"})
 		if flat, ferr := c.FlatContainerVersions(id); ferr == nil && len(flat.Versions) > 0 {
 			checkNuspecDownload(c, r, id, flat.Versions[0])
 		} else {
@@ -99,6 +101,10 @@ func runPackageIntegrity(c *client.Client, opts Options, r *Report) {
 		}
 		return
 	}
+
+	idx := &reg.Index
+	checkRegistrationFields(r, id, reg)
+	checkRegistrationGzip(c, r, id)
 
 	var regVersions []string
 	malformed := idx.Count == 0 || len(idx.Items) == 0
@@ -138,7 +144,9 @@ func runPackageIntegrity(c *client.Client, opts Options, r *Report) {
 	runHashCheck(c, id, idx, r)
 }
 
-// sameVersionSet compares two version lists case-insensitively, ignoring order.
+// sameVersionSet compares two version lists after normalization (so a
+// registration version with build metadata matches its flat-container
+// form), case-insensitively, ignoring order.
 func sameVersionSet(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
@@ -146,7 +154,7 @@ func sameVersionSet(a, b []string) bool {
 	norm := func(vs []string) map[string]bool {
 		m := make(map[string]bool, len(vs))
 		for _, v := range vs {
-			m[strings.ToLower(v)] = true
+			m[strings.ToLower(normalizeVersion(v))] = true
 		}
 		return m
 	}

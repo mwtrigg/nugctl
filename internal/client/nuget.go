@@ -388,8 +388,9 @@ type DependencyGroup struct {
 // Dependency is one dependency within a DependencyGroup: a package ID and
 // its NuGet version range (https://learn.microsoft.com/nuget/concepts/package-versioning#version-ranges).
 type Dependency struct {
-	ID    string `json:"id"`
-	Range string `json:"range,omitempty"`
+	ID           string `json:"id"`
+	Range        string `json:"range,omitempty"`
+	Registration string `json:"registration,omitempty"`
 }
 
 func (c *Client) Registration(id string) (*RegistrationIndex, error) {

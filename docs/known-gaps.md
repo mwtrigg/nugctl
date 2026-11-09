@@ -13,26 +13,6 @@ feeds that unlist on DELETE).
 
 ## TODO
 
-- [ ] **Original id casing in JSON bodies.** A feed that lowercases ids in
-  registration and search passes every check, yet breaks PowerShell module
-  imports on case-sensitive filesystems (PSResourceGet saves to the id it
-  reads). Check: push a mixed-case id; the registration `catalogEntry.id`
-  and search `data[].id` must equal the `.nuspec` id byte for byte.
-- [ ] **Required registration fields.** Page `@id`, `lower`, `upper`; leaf
-  `@id`; catalogEntry `@id`; `parent` on separately fetched pages. A feed
-  missing all of them passes today.
-- [ ] **Non-inlined registration pages.** When a page has no `items`, fetch
-  its `@id` and validate the page (the readonly checks only look at inlined
-  leaves).
-- [ ] **Dependencies.** Push a package with a dependency group and assert
-  `catalogEntry.dependencyGroups[].dependencies[]` (`id`, `range`,
-  `registration`). A feed that serves no dependency groups passes today,
-  and clients then install no dependencies.
-- [ ] **Unlisted versions stay in registration.** After unlisting on a feed
-  that unlists rather than deletes, registration must still list the
-  version with `listed:false`, and the flat container must still list it.
-- [ ] **gzip on RegistrationsBaseUrl/3.4.0 and 3.6.0.** `Accept-Encoding:
-  gzip` should get `Content-Encoding: gzip`. Unchecked.
 - [ ] **Proxy / read-only feeds.** `feed verify` against a proxying feed
   would catch a broken service index there. Document a "verify a read-only
   or proxy feed with `--package <id>`" recipe in the README.
@@ -63,3 +43,14 @@ feeds that unlist on DELETE).
   goes up as form field `nupkg`; a rejection warns, because NuGet's client
   always sends `package`, and the package is re-pushed) and
   `relist of an absent version gives 404` (405/501, no relist at all, warns).
+- [x] **Registration bodies** (#4). Readonly: `registration required fields`
+  (index `count`/`items`; page `@id`, `count`, `lower`, `upper`, plus
+  `parent` and `items` on pages fetched out of line; leaf `@id`,
+  `packageContent`, object `catalogEntry` with `@id`, `id`, `version`;
+  out-of-line pages are fetched and their leaves feed the other checks) and
+  `registration gzip: RegistrationsBaseUrl/3.4.0` / `3.6.0` (uncompressed
+  warns). With `--push`: a mixed-case id with one dependency, and
+  `original id casing: registration` / `: search`,
+  `registration dependencies` (missing fails; absent `range` or
+  `registration` warns; a different range fails) and, on feeds that unlist,
+  `unlisted version stays in registration (listed:false)`.
